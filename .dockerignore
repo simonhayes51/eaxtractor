@@ -1,0 +1,10 @@
+# General
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local tools (don’t ship to Railway)
+har_extract.py
+fut_private_watcher.py
