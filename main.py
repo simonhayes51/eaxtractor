@@ -1,4 +1,4 @@
-import asyncio, aiohttp, json, hashlib, re, time, os
+import asyncio, aiohttp, json, hashlib, re, time
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -21,7 +21,7 @@ MAX_EVENTS = 1000
 LAST_TICK = {"ts": None}
 
 # ---------------- utils ----------------
-def now_iso():
+def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def jdump(x): return json.dumps(x, sort_keys=True, separators=(",", ":"))
@@ -62,7 +62,7 @@ def diff(a, b, path=""):
             res={}
             for it in xs:
                 if isinstance(it,dict):
-                    for key in ("id","challengeId","groupId","objectiveId","templateId","name","packId"):
+                    for key in ("id","challengeId","groupId","objectiveId","templateId","name","packId","evolutionId"):
                         if key in it:
                             res[(key,it[key])] = sha(jdump(it).encode())[:8]; break
             return res
@@ -91,12 +91,13 @@ async def fetch(session: aiohttp.ClientSession, name: str, url: str, cond_header
 
 # -------- classify & summarise events --------
 TOPIC_PATTERNS = [
-    ("SBC",       re.compile(r"\b(SBC|challenge|group|template|required|chem|squadRating|minRating)\b", re.I)),
-    ("Packs",     re.compile(r"\b(pack|store|price|start|end|guarantee|rarity|weight)\b", re.I)),
-    ("Objectives",re.compile(r"\b(objective|task|milestone|season|reward)\b", re.I)),
-    ("Locales",   re.compile(r"\b(locale|string|en_us|string_catalog)\b", re.I)),
-    ("Bundles",   re.compile(r"\b(\.js|bundle|service-worker|manifest)\b", re.I)),
-    ("Flags",     re.compile(r"\b(remoteconfig|feature|isEnabled|enableAt|rollout|treatment)\b", re.I)),
+    ("Evolutions", re.compile(r"\b(evolution|evo|evolutions|evolutionId|eligibility|boosts|tasks)\b", re.I)),
+    ("SBC",        re.compile(r"\b(SBC|challenge|group|template|required|chem|squadRating|minRating|requirements)\b", re.I)),
+    ("Packs",      re.compile(r"\b(pack|store|price|start|end|guarantee|rarity|weight)\b", re.I)),
+    ("Objectives", re.compile(r"\b(objective|task|milestone|season|reward)\b", re.I)),
+    ("Locales",    re.compile(r"\b(locale|string|en_us|string_catalog)\b", re.I)),
+    ("Bundles",    re.compile(r"\b(\.js|bundle|service-worker|manifest)\b", re.I)),
+    ("Flags",      re.compile(r"\b(remoteconfig|feature|isEnabled|enableAt|rollout|treatment)\b", re.I)),
 ]
 
 def classify_topic(target: str, lines: List[str]) -> str:
@@ -112,13 +113,11 @@ def classify_severity(lines: List[str]) -> str:
     return "Edit"
 
 def make_headline(topic: str, lines: List[str]) -> str:
-    # Prefer meaningful signals
     for ln in lines:
         if "isEnabled:" in ln: return f"{topic}: enable flip ({ln.strip()})"
         if "minRating" in ln or "squadRating" in ln: return f"{topic}: rating change ({ln.strip()})"
         if "ADDED" in ln and "[" in ln and "]" in ln: return f"{topic}: new item {ln.split(':',1)[0].strip()}"
         if "LIST" in ln: return f"{topic}: list size changed ({ln.strip()})"
-    # fallback
     return f"{topic}: {lines[0][:120]}"
 
 # -------- core processing --------
@@ -142,7 +141,7 @@ async def process_target(session, t):
             except: return None
             return scrub_json(obj, include, exclude) if (include or exclude) else obj
         txt=b.decode("utf-8","ignore")
-        lines=[ln for ln in txt.splitlines() if re.search(r"(SBC|Objective|Promo|Challenge|Season|Pack|isEnabled|manifest|service-worker)", ln, re.I)]
+        lines=[ln for ln in txt.splitlines() if re.search(r"(SBC|Objective|Promo|Challenge|Season|Pack|isEnabled|manifest|service-worker|Evolution)", ln, re.I)]
         return {"lines":lines}
 
     snaps = sorted(dirp.glob(f"*.{ext}"))
@@ -154,8 +153,8 @@ async def process_target(session, t):
             "ts": now_iso(), "target": name, "kind":"baseline",
             "topic": classify_topic(name, ["baseline"]),
             "severity": "Baseline",
-            "headline": "First snapshot saved",
-            "lines":[f"First snapshot: {snap.name}"]
+            "headline": f"📌 Baseline captured ({snap.name})",
+            "lines":[]
         })
         del EVENTS[:-MAX_EVENTS]; return
 
@@ -205,10 +204,10 @@ INDEX_HTML = """<!doctype html>
 body{max-width:1100px;background:var(--bg);color:#e7edf3}
 .header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;margin-right:8px;color:#000}
-.badge.baseline{background:#cbd5e1}
-.badge.New{background:var(--cyan);color:#000}
-.badge.Live{background:var(--lime);color:#000}
-.badge.Edit{background:var(--amber);color:#000}
+.badge.Baseline{background:#cbd5e1}
+.badge.New{background:var(--cyan)}
+.badge.Live{background:var(--lime)}
+.badge.Edit{background:var(--amber)}
 .topic{background:#223046;color:#b7ccff}
 .event{padding:14px;border:1px solid #1f2a38;border-radius:14px;margin:12px 0;background:var(--card)}
 .event.change.fresh{animation: glow 2s ease-out}
@@ -217,10 +216,15 @@ body{max-width:1100px;background:var(--bg);color:#e7edf3}
 small{color:var(--muted)}
 .controls{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
 select,input[type="search"]{background:#0e141c;border:1px solid #273345;color:#e7edf3}
+summary{cursor:pointer}
+.mini{font-size:12px;color:var(--muted)}
+.headline{font-weight:700;margin:6px 0}
+.icon{opacity:.9;margin-right:6px}
+
+/* diff tokens */
 .highlight-added{background:rgba(102,224,255,.18);padding:0 4px;border-radius:4px}
 .highlight-removed{background:rgba(255,107,107,.18);padding:0 4px;border-radius:4px}
 .highlight-arrow{background:rgba(255,209,102,.18);padding:0 4px;border-radius:4px}
-summary{cursor:pointer}
 </style>
 </head>
 <body>
@@ -237,12 +241,12 @@ summary{cursor:pointer}
     </select>
     <select id="topic">
       <option value="">All topics</option>
-      <option>SBC</option><option>Packs</option><option>Objectives</option>
-      <option>Locales</option><option>Bundles</option><option>Flags</option><option>Other</option>
+      <option>Evolutions</option><option>SBC</option><option>Packs</option>
+      <option>Objectives</option><option>Locales</option><option>Bundles</option><option>Flags</option><option>Other</option>
     </select>
     <select id="severity">
       <option value="">Any severity</option>
-      <option>New</option><option>Live</option><option>Edit</option>
+      <option>New</option><option>Live</option><option>Edit</option><option>Baseline</option>
     </select>
     <input id="q" type="search" placeholder="Search text…" />
     <button id="clear">Clear filters</button>
@@ -251,11 +255,15 @@ summary{cursor:pointer}
   <div id="events">Loading…</div>
 
 <script>
+const ICONS = {
+  "SBC":"🧩", "Packs":"🎁", "Objectives":"🎯", "Locales":"📝",
+  "Bundles":"📦", "Flags":"🚩", "Evolutions":"🔄", "Other":"✨"
+};
+
 function decorate(line){
-  // highlight tokens
-  line = line.replace(/\\bADDED\\b/g, '<span class="highlight-added">ADDED</span>');
-  line = line.replace(/\\bREMOVED\\b/g, '<span class="highlight-removed">REMOVED</span>');
-  line = line.replace(/: ([^\\n]*?) -> ([^\\n]*)/g, ': <span class="highlight-arrow">$1 -> $2</span>');
+  line = line.replace(/\bADDED\b/g, '<span class="highlight-added">ADDED</span>');
+  line = line.replace(/\bREMOVED\b/g, '<span class="highlight-removed">REMOVED</span>');
+  line = line.replace(/: ([^\n]*?) -> ([^\n]*)/g, ': <span class="highlight-arrow">$1 -> $2</span>');
   return line.replace(/&/g,'&amp;').replace(/</g,'&lt;');
 }
 
@@ -280,22 +288,33 @@ async function load(){
     if (topic && ev.topic !== topic) return;
     if (severity && ev.severity !== severity) return;
     if (q){
-      const text = (ev.headline + ' ' + ev.lines.join(' ')).toLowerCase();
+      const text = (ev.headline + ' ' + (ev.lines||[]).join(' ')).toLowerCase();
       if (!text.includes(q)) return;
     }
     const fresh = ev.kind === 'change' && (!lastSeen || Date.parse(ev.ts.replace(' UTC','Z')) > lastSeen);
+
+    // Compact baseline
+    if (ev.kind === 'baseline'){
+      const mini = document.createElement('div');
+      mini.className='mini';
+      mini.innerHTML = `📌 <span class="badge Baseline">Baseline</span> <span class="badge topic">${ev.topic||'Other'}</span> <b>${ev.target}</b> <small>${ev.ts}</small>`;
+      wrap.appendChild(mini);
+      return;
+    }
+
     const d = document.createElement('div');
     d.className='event ' + ev.kind + (fresh ? ' fresh' : '');
+    const icon = ICONS[ev.topic||'Other'] || '✨';
     d.innerHTML = `
       <div>
         <span class="badge ${ev.severity}">${ev.severity}</span>
         <span class="badge topic">${ev.topic || 'Other'}</span>
-        <b>${ev.target}</b> <small>${ev.ts}</small>
+        <b class="icon">${icon}</b><b>${ev.target}</b> <small>${ev.ts}</small>
       </div>
-      <div style="margin:6px 0"><strong>${ev.headline || ''}</strong></div>
+      <div class="headline">${ev.headline || ''}</div>
       <details open>
-        <summary><small>Show details</small></summary>
-        <div class="lines">${ev.lines.map(l=>decorate(l)).join('\\n')}</div>
+        <summary>Show details</summary>
+        <div class="lines">${(ev.lines||[]).map(l=>decorate(l)).join('\\n')}</div>
       </details>
     `;
     wrap.appendChild(d);
