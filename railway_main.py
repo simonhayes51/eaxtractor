@@ -531,6 +531,9 @@ class RailwayEAFCDataMiner:
             if analysis['change_type'] == 'unknown':
                 analysis['change_type'] = 'config_update'
         
+        return analysis
+
+        
         # Endpoint-specific boosts based on URL patterns
         endpoint_indicators = {
             'academy': 12,  # Evolution content very valuable
@@ -549,7 +552,7 @@ class RailwayEAFCDataMiner:
                 analysis['significance_score'] += boost
                 analysis['confidence'] = min(95, analysis['confidence'] + 5)
         
-        return analysis = 'config_update' if analysis['change_type'] == 'unknown' else analysis['change_type']
+        return 'config_update' if analysis['change_type'] == 'unknown' else analysis['change_type']
         
         return analysis
 
