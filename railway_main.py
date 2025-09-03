@@ -56,16 +56,38 @@ class RailwayEAFCDataMiner:
         self.db_path = "data/ea_fc_changes.db"
         self.init_database()
         
-        # EA FC endpoints - optimized list for Railway
+        # EA FC 25 Real API endpoints - discovered from actual app traffic
         self.endpoints = {
-            "web_app_main": "https://www.ea.com/fifa/ultimate-team/web-app/",
-            "web_app_config": "https://www.ea.com/fifa/ultimate-team/web-app/config/config.json",
-            "sbc_endpoint": "https://www.ea.com/fifa/ultimate-team/api/sbc",
-            "objectives_endpoint": "https://www.ea.com/fifa/ultimate-team/api/objectives", 
-            "packs_endpoint": "https://www.ea.com/fifa/ultimate-team/api/packs",
-            "players_endpoint": "https://www.ea.com/fifa/ultimate-team/api/players",
-            "static_content": "https://media.contentapi.ea.com/content/dam/eacom/fifa/",
-            "cdn_assets": "https://fifa24.content.easports.com/fifa/fltOnlineAssets/"
+            # 🏆 SBC (Squad Building Challenges) - HIGH PRIORITY
+            "sbc_sets": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/sets",
+            "sbc_challenges_1244": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/setId/1244/challenges",
+            "sbc_challenge_4333": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/challenge/4333",
+            
+            # 🎯 Objectives - HIGH PRIORITY
+            "objectives_list": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/objective/list",
+            "objectives_categories": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/objective/categories/all",
+            
+            # 🛒 Store & Packs - HIGH PRIORITY
+            "store_purchase_groups": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/store/purchaseGroup/all?ppInfo=true&categoryInfo=true",
+            "store_category": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sku/FFA25PS5/store/category",
+            
+            # ⭐ Featured Content - MEDIUM PRIORITY
+            "featured_squad_totw": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/fullhistory?featureConsumerId=sqbttotw",
+            "live_messages": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/livemessage/template?screen=companionstorefeaturedtab",
+            
+            # 📊 Meta & Rewards - MEDIUM PRIORITY
+            "meta_rewards": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/metaRewards/items/attributes?itemIds=5005104,6114032,5005098,5005099,5005114,6840832,5005100,6830817,5005116,100941645,6830798,8120328,5005103,5005101,5005102,5005117,6820748,5005115,5005122,67376164,6869171,6313068,100905937,84162632,5005118,184762707,134458366,5004362,5005105,5004363,6844132,5005119,84145111,117672189,5005123,5005120,100840299,5005107,5005121,5005112,5005113,134410713",
+            "season_data": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/season",
+            
+            # 🔧 Configuration - LOW PRIORITY
+            "remote_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json",
+            "scmp_data": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/data/lite",
+            
+            # 📈 Analytics & Tracking
+            "pin_events": "https://pin-river.data.ea.com/pinEvents",
+            "club_stats": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/club/stats/club",
+            "watchlist": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/watchlist",
+            "stadium": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/stadium"
         }
         
         # Enhanced content patterns for FC 25 API responses
