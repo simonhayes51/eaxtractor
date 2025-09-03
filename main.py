@@ -1,37 +1,27 @@
-import asyncio, aiohttp, json, hashlib, re, time, textwrap, io
+import asyncio, aiohttp, json, hashlib, re, time, os
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List
 import yaml
-from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image, ImageDraw, ImageFont
 
 APP = FastAPI()
 APP.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
-# -------- storage --------
 DATA = Path("./data")
 (DATA / "snaps").mkdir(parents=True, exist_ok=True)
 
-# -------- runtime state --------
-EVENTS: List[Dict[str, Any]] = []     # rolling feed of events
+EVENTS: List[Dict[str, Any]] = []   # rolling in-memory feed
 MAX_EVENTS = 1000
 LAST_TICK = {"ts": None}
-CONFIG_ERR = {"message": None, "targets": 0}
-WATCHER_TASK = None
-SEMA = asyncio.Semaphore(10)
 
-# ---- catalogs to enrich with player stats ----
-CATALOG_TARGETS = {"sbc_catalog", "objectives_catalog", "evolution_catalog"}
-KEYATTR_TARGET = "keyattributes_json"
-
-# -------- helpers --------
-def now_iso() -> str:
+# ---------------- utils ----------------
+def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def jdump(x): return json.dumps(x, sort_keys=True, separators=(",", ":"))
@@ -72,8 +62,7 @@ def diff(a, b, path=""):
             res={}
             for it in xs:
                 if isinstance(it,dict):
-                    for key in ("id","challengeId","groupId","objectiveId","templateId",
-                                "name","packId","evolutionId","playerId","assetId","definitionId"):
+                    for key in ("id","challengeId","groupId","objectiveId","templateId","name","packId"):
                         if key in it:
                             res[(key,it[key])] = sha(jdump(it).encode())[:8]; break
             return res
@@ -96,20 +85,18 @@ async def fetch(session: aiohttp.ClientSession, name: str, url: str, cond_header
     async with session.get(url, headers=headers) as r:
         if r.status==304: return None, {"not_modified":True}
         body=await r.read()
-        meta={"etag":r.headers.get("ETag"), "lm":r.headers.get("Last-Modified"),
-              "ts":now_iso(), "status":r.status}
+        meta={"etag":r.headers.get("ETag"), "lm":r.headers.get("Last-Modified"), "ts":now_iso(), "status":r.status}
         meta_p.write_text(json.dumps(meta, indent=2))
         return body, meta
 
-# -------- classify --------
+# -------- classify & summarise events --------
 TOPIC_PATTERNS = [
-    ("Evolutions", re.compile(r"\b(evolution|evo|evolutionId|eligibility|boosts|tasks|cost)\b", re.I)),
-    ("SBC",        re.compile(r"\b(SBC|challenge|group|template|required|chem|squadRating|minRating|requirements|repeatable)\b", re.I)),
-    ("Packs",      re.compile(r"\b(pack|store|price|guarantee|rarity|coins|points)\b", re.I)),
-    ("Objectives", re.compile(r"\b(objective|task|milestone|season|reward)\b", re.I)),
-    ("Locales",    re.compile(r"\b(locale|string|en_us|string_catalog)\b", re.I)),
-    ("Bundles",    re.compile(r"\b(\.js|bundle|service-worker|manifest)\b", re.I)),
-    ("Flags",      re.compile(r"\b(remoteconfig|isEnabled|flag)\b", re.I)),
+    ("SBC",       re.compile(r"\b(SBC|challenge|group|template|required|chem|squadRating|minRating)\b", re.I)),
+    ("Packs",     re.compile(r"\b(pack|store|price|start|end|guarantee|rarity|weight)\b", re.I)),
+    ("Objectives",re.compile(r"\b(objective|task|milestone|season|reward)\b", re.I)),
+    ("Locales",   re.compile(r"\b(locale|string|en_us|string_catalog)\b", re.I)),
+    ("Bundles",   re.compile(r"\b(\.js|bundle|service-worker|manifest)\b", re.I)),
+    ("Flags",     re.compile(r"\b(remoteconfig|feature|isEnabled|enableAt|rollout|treatment)\b", re.I)),
 ]
 
 def classify_topic(target: str, lines: List[str]) -> str:
@@ -120,77 +107,30 @@ def classify_topic(target: str, lines: List[str]) -> str:
 
 def classify_severity(lines: List[str]) -> str:
     txt = "\n".join(lines)
-    if re.search(r"isEnabled:\s*false\s*->\s*true", txt): return "Live"
-    if re.search(r"ADDED", txt): return "New"
+    if re.search(r"\bisEnabled:\s*false\s*->\s*true\b", txt): return "Live"     # went live
+    if re.search(r"\bADDED\b", txt): return "New"
     return "Edit"
 
 def make_headline(topic: str, lines: List[str]) -> str:
+    # Prefer meaningful signals
     for ln in lines:
         if "isEnabled:" in ln: return f"{topic}: enable flip ({ln.strip()})"
-        if "minRating" in ln: return f"{topic}: rating change ({ln.strip()})"
-        if "ADDED" in ln: return f"{topic}: new item {ln.split(':',1)[0]}"
+        if "minRating" in ln or "squadRating" in ln: return f"{topic}: rating change ({ln.strip()})"
+        if "ADDED" in ln and "[" in ln and "]" in ln: return f"{topic}: new item {ln.split(':',1)[0].strip()}"
+        if "LIST" in ln: return f"{topic}: list size changed ({ln.strip()})"
+    # fallback
     return f"{topic}: {lines[0][:120]}"
 
-# -------- JSON enrichment --------
-def _latest_snap_json(target: str) -> Optional[dict]:
-    dirp = DATA / "snaps" / target
-    snaps = sorted(dirp.glob("*.json"))
-    if not snaps: return None
-    try: return json.loads(snaps[-1].read_text())
-    except: return None
-
-def _walk_dicts(node):
-    if isinstance(node, dict):
-        yield node
-        for v in node.values(): yield from _walk_dicts(v)
-    elif isinstance(node, list):
-        for v in node: yield from _walk_dicts(v)
-
-def _index_keyattributes() -> Tuple[dict, dict]:
-    data = _latest_snap_json(KEYATTR_TARGET) or {}
-    by_id, by_name = {}, {}
-    for d in _walk_dicts(data):
-        if not isinstance(d, dict): continue
-        if any(k in d for k in ("overall","pace","shooting","passing","dribbling","defending","physical")):
-            pid = d.get("id") or d.get("assetId") or d.get("definitionId") or d.get("playerId")
-            if pid: by_id[str(pid)] = d
-            n = d.get("name") or d.get("commonName") or d.get("fullName")
-            if isinstance(n,str): by_name.setdefault(n.lower(), []).append(d)
-    return by_id, by_name
-
-def _fmt_stats(p: dict) -> str:
-    name = p.get("name") or p.get("commonName") or "Unknown"
-    pos = p.get("position") or p.get("preferredPosition") or ""
-    ovr = p.get("overall") or p.get("rating") or "?"
-    pac = p.get("pace") or "?"
-    sho = p.get("shooting") or "?"
-    pas = p.get("passing") or "?"
-    dri = p.get("dribbling") or "?"
-    de  = p.get("defending") or "?"
-    phy = p.get("physical") or "?"
-    return f"{name} {pos} — {ovr} OVR | PAC {pac} SHO {sho} PAS {pas} DRI {dri} DEF {de} PHY {phy}"
-
-# -------- post generators --------
-TOPIC_POSTER = {
-    "SBC": lambda lines: "SBC Update:\n"+"\n".join(lines),
-    "Evolutions": lambda lines: "Evolution Update:\n"+"\n".join(lines),
-    "Packs": lambda lines: "Pack Update:\n"+"\n".join(lines),
-    "Objectives": lambda lines: "Objective Update:\n"+"\n".join(lines),
-    "Locales": lambda lines: "Strings changed:\n"+"\n".join(lines),
-    "Bundles": lambda lines: "Bundle changed:\n"+"\n".join(lines),
-    "Flags": lambda lines: "Config changed:\n"+"\n".join(lines),
-    "Other": lambda lines: "Update:\n"+"\n".join(lines),
-}
-
-# -------- processing --------
+# -------- core processing --------
 async def process_target(session, t):
     name, url, typ = t["name"], t["url"], t.get("type","text")
     tk = t.get("track_keys") or {}
     include, exclude = tk.get("include"), tk.get("exclude")
 
-    raw, meta = await fetch(session, name, url, {"Accept":"*/*"})
+    raw, meta = await fetch(session, name, url, {"Accept":"*/*","Accept-Encoding":"gzip, deflate, br"})
     if not raw or meta.get("not_modified"): return
 
+    # snapshot
     ext = "json" if typ=="json" else "txt"
     dirp = DATA / "snaps" / name; dirp.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -198,98 +138,194 @@ async def process_target(session, t):
 
     def parse(b):
         if typ=="json":
-            try: obj=json.loads(b.decode())
+            try: obj=json.loads(b.decode("utf-8","ignore"))
             except: return None
             return scrub_json(obj, include, exclude) if (include or exclude) else obj
-        return {"lines": b.decode().splitlines()}
+        txt=b.decode("utf-8","ignore")
+        lines=[ln for ln in txt.splitlines() if re.search(r"(SBC|Objective|Promo|Challenge|Season|Pack|isEnabled|manifest|service-worker)", ln, re.I)]
+        return {"lines":lines}
 
     snaps = sorted(dirp.glob(f"*.{ext}"))
     cur = parse(raw)
     prev = parse(snaps[-2].read_bytes()) if len(snaps)>=2 else None
-    if prev is None:
-        EVENTS.append({"ts":now_iso(),"target":name,"kind":"baseline","topic":"Other",
-                       "severity":"Baseline","headline":f"📌 Baseline captured ({snap.name})","lines":[]})
-        return
 
-    changes = diff(prev, cur) if typ=="json" else list(set(cur.get("lines",[]))-set(prev.get("lines",[])))
-    interesting=[c for c in changes if not re.search(r"(lastUpdated|build|timestamp)",c)]
+    if prev is None:
+        EVENTS.append({
+            "ts": now_iso(), "target": name, "kind":"baseline",
+            "topic": classify_topic(name, ["baseline"]),
+            "severity": "Baseline",
+            "headline": "First snapshot saved",
+            "lines":[f"First snapshot: {snap.name}"]
+        })
+        del EVENTS[:-MAX_EVENTS]; return
+
+    changes = diff(prev, cur) if typ=="json" else list(sorted(set(cur.get("lines",[]))-set(prev.get("lines",[]))))
+    interesting=[c for c in changes if not re.search(r"(lastUpdated|generatedAt|build|timestamp|version)", c, re.I)]
+
     if interesting:
         topic = classify_topic(name, interesting)
         severity = classify_severity(interesting)
         headline = make_headline(topic, interesting)
-        post_md = TOPIC_POSTER.get(topic, TOPIC_POSTER["Other"])(interesting)
-
-        # optional: enrich with players
-        if name in CATALOG_TARGETS:
-            id_map, name_map = _index_keyattributes()
-            players_section=[]
-            for ln in interesting:
-                m=re.search(r"(playerId|assetId|definitionId)\D+(\d+)",ln)
-                if m:
-                    p=id_map.get(m.group(2))
-                    if p: players_section.append("• "+_fmt_stats(p))
-            if players_section:
-                post_md+="\n\nPlayers:\n"+"\n".join(players_section)
-
-        EVENTS.append({"ts":now_iso(),"target":name,"kind":"change",
-                       "topic":topic,"severity":severity,"headline":headline,
-                       "lines":interesting[:200],"post_md":post_md})
-
-# -------- watcher --------
-def load_cfg():
-    try:
-        with open("endpoints.yaml","r") as f: cfg=yaml.safe_load(f) or {}
-        CONFIG_ERR["targets"]=len(cfg.get("targets",[]))
-        CONFIG_ERR["message"]=None if CONFIG_ERR["targets"] else "No targets"
-        return cfg
-    except Exception as e:
-        CONFIG_ERR["message"]=str(e); CONFIG_ERR["targets"]=0
-        return {"poll_interval_seconds":90,"targets":[]}
-
-async def safe_process(sess,t):
-    try:
-        async with SEMA: await process_target(sess,t)
-    except Exception as e:
-        EVENTS.append({"ts":now_iso(),"target":t.get("name","?"),
-                       "kind":"change","topic":"Other","severity":"Edit",
-                       "headline":f"Error {e}","lines":[str(e)]})
+        EVENTS.append({
+            "ts": now_iso(), "target": name, "kind":"change",
+            "topic": topic, "severity": severity, "headline": headline,
+            "lines": interesting[:250]
+        })
+        del EVENTS[:-MAX_EVENTS]
 
 async def watcher():
-    cfg=load_cfg()
-    interval=int(cfg.get("poll_interval_seconds",90))
-    targets=cfg.get("targets",[])
-    timeout=aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as sess:
+    cfg = yaml.safe_load(open("endpoints.yaml","r",encoding="utf-8"))
+    interval = int(cfg.get("poll_interval_seconds", 90))
+    targets = cfg.get("targets", [])
+    timeout = aiohttp.ClientTimeout(total=25)
+    headers={"User-Agent":"FUT-PrivateWatcher/1.1 (+gentle polling)"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as sess:
         while True:
             start=time.time()
-            if targets:
-                await asyncio.gather(*(safe_process(sess,t) for t in targets))
-                LAST_TICK["ts"]=now_iso()
-            await asyncio.sleep(max(0,interval-(time.time()-start)))
-
-# -------- Web UI & API --------
-INDEX_HTML="""<!doctype html><html><body><h1>FUT Change Watcher</h1>
-<div id='events'>Loading…</div>
-<script>
-async function load(){
- let r=await fetch('/api/events');let j=await r.json();
- document.getElementById('events').innerHTML=j.events.map(e=>`<pre>${e.headline}</pre>`).join('')
-}
-load();setInterval(load,15000)
-</script></body></html>"""
-
-@APP.get("/",response_class=HTMLResponse)
-def index(): return HTMLResponse(INDEX_HTML)
-
-@APP.get("/api/events")
-def api_events(): return JSONResponse({"events":EVENTS})
-
-@APP.get("/api/health")
-def health(): return JSONResponse({"last_check":LAST_TICK["ts"],"config_error":CONFIG_ERR})
+            await asyncio.gather(*(process_target(sess, t) for t in targets))
+            LAST_TICK["ts"] = now_iso()
+            await asyncio.sleep(max(0, interval - (time.time()-start)))
 
 @APP.on_event("startup")
 async def _startup():
     asyncio.create_task(watcher())
 
-if __name__=="__main__":
-    import uvicorn; uvicorn.run("main:APP",host="0.0.0.0",port=8000)
+# ---------------- Web UI ----------------
+INDEX_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>FUT Change Watcher</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
+<style>
+:root{
+  --bg:#0b0f14; --card:#121820; --muted:#8a97a6; --lime:#93ff66; --red:#ff6b6b; --amber:#ffd166; --cyan:#66e0ff; --vio:#b794f4;
+}
+body{max-width:1100px;background:var(--bg);color:#e7edf3}
+.header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;margin-right:8px;color:#000}
+.badge.baseline{background:#cbd5e1}
+.badge.New{background:var(--cyan);color:#000}
+.badge.Live{background:var(--lime);color:#000}
+.badge.Edit{background:var(--amber);color:#000}
+.topic{background:#223046;color:#b7ccff}
+.event{padding:14px;border:1px solid #1f2a38;border-radius:14px;margin:12px 0;background:var(--card)}
+.event.change.fresh{animation: glow 2s ease-out}
+@keyframes glow{0%{box-shadow:0 0 0 rgba(147,255,102,.0)} 30%{box-shadow:0 0 24px rgba(147,255,102,.35)} 100%{box-shadow:0 0 0 rgba(147,255,102,.0)}}
+.lines{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; white-space:pre-wrap}
+small{color:var(--muted)}
+.controls{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+select,input[type="search"]{background:#0e141c;border:1px solid #273345;color:#e7edf3}
+.highlight-added{background:rgba(102,224,255,.18);padding:0 4px;border-radius:4px}
+.highlight-removed{background:rgba(255,107,107,.18);padding:0 4px;border-radius:4px}
+.highlight-arrow{background:rgba(255,209,102,.18);padding:0 4px;border-radius:4px}
+summary{cursor:pointer}
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1 style="margin:0">FUT Change Watcher</h1>
+    <div><small>Last check: <span id="last">—</span></small></div>
+  </div>
+
+  <div class="controls">
+    <select id="kind">
+      <option value="">All events</option>
+      <option value="change">Changes only</option>
+      <option value="baseline">Baselines only</option>
+    </select>
+    <select id="topic">
+      <option value="">All topics</option>
+      <option>SBC</option><option>Packs</option><option>Objectives</option>
+      <option>Locales</option><option>Bundles</option><option>Flags</option><option>Other</option>
+    </select>
+    <select id="severity">
+      <option value="">Any severity</option>
+      <option>New</option><option>Live</option><option>Edit</option>
+    </select>
+    <input id="q" type="search" placeholder="Search text…" />
+    <button id="clear">Clear filters</button>
+  </div>
+
+  <div id="events">Loading…</div>
+
+<script>
+function decorate(line){
+  // highlight tokens
+  line = line.replace(/\\bADDED\\b/g, '<span class="highlight-added">ADDED</span>');
+  line = line.replace(/\\bREMOVED\\b/g, '<span class="highlight-removed">REMOVED</span>');
+  line = line.replace(/: ([^\\n]*?) -> ([^\\n]*)/g, ': <span class="highlight-arrow">$1 -> $2</span>');
+  return line.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+}
+
+let lastSeen = 0;
+async function load(){
+  const [evRes, hRes] = await Promise.all([fetch('/api/events'), fetch('/api/health')]);
+  const js = await evRes.json();
+  const health = await hRes.json();
+  document.getElementById('last').textContent = health.last_check || '—';
+  const wrap = document.getElementById('events');
+  const kind = document.getElementById('kind').value;
+  const topic = document.getElementById('topic').value;
+  const severity = document.getElementById('severity').value;
+  const q = (document.getElementById('q').value || '').toLowerCase();
+
+  wrap.innerHTML='';
+  const events = js.events.slice();
+  let newestTs = lastSeen;
+
+  events.reverse().forEach(ev=>{
+    if (kind && ev.kind !== kind) return;
+    if (topic && ev.topic !== topic) return;
+    if (severity && ev.severity !== severity) return;
+    if (q){
+      const text = (ev.headline + ' ' + ev.lines.join(' ')).toLowerCase();
+      if (!text.includes(q)) return;
+    }
+    const fresh = ev.kind === 'change' && (!lastSeen || Date.parse(ev.ts.replace(' UTC','Z')) > lastSeen);
+    const d = document.createElement('div');
+    d.className='event ' + ev.kind + (fresh ? ' fresh' : '');
+    d.innerHTML = `
+      <div>
+        <span class="badge ${ev.severity}">${ev.severity}</span>
+        <span class="badge topic">${ev.topic || 'Other'}</span>
+        <b>${ev.target}</b> <small>${ev.ts}</small>
+      </div>
+      <div style="margin:6px 0"><strong>${ev.headline || ''}</strong></div>
+      <details open>
+        <summary><small>Show details</small></summary>
+        <div class="lines">${ev.lines.map(l=>decorate(l)).join('\\n')}</div>
+      </details>
+    `;
+    wrap.appendChild(d);
+    const tsNum = Date.parse(ev.ts.replace(' UTC','Z'));
+    if (tsNum > newestTs) newestTs = tsNum;
+  });
+  if (newestTs) lastSeen = newestTs;
+}
+
+document.getElementById('clear').onclick = () => {
+  document.getElementById('kind').value='';
+  document.getElementById('topic').value='';
+  document.getElementById('severity').value='';
+  document.getElementById('q').value='';
+  load();
+};
+
+load(); setInterval(load, 15000);
+</script>
+</body>
+</html>"""
+
+@APP.get("/", response_class=HTMLResponse)
+def index():
+    return HTMLResponse(INDEX_HTML)
+
+@APP.get("/api/events")
+def api_events():
+    return JSONResponse({"events": EVENTS})
+
+@APP.get("/api/health")
+def health():
+    return JSONResponse({"last_check": LAST_TICK["ts"], "events_cached": len(EVENTS)})
