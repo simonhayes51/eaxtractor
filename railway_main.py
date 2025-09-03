@@ -20,6 +20,7 @@ import sys
 from aiohttp import web
 from dotenv import load_dotenv
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from datetime import datetime, timedelta, timezone
 
 # Load environment variables
 load_dotenv()
@@ -463,7 +464,7 @@ class RailwayEAFCDataMiner:
                     ON CONFLICT(endpoint) DO UPDATE SET
                         content_hash=excluded.content_hash,
                         updated_at=excluded.updated_at
-                ''', (endpoint, content_hash, datetime.utcnow().isoformat()))
+                ''', (endpoint, content_hash, datetime.now(timezone.utc).isoformat()))
         except Exception as e:
             logging.error(f"Failed to persist known_hash for {endpoint}: {e}")
 
@@ -602,7 +603,7 @@ class RailwayEAFCDataMiner:
         embed = {
             "title": "🎉 EA FC Endpoint Status Change!",
             "color": 0x00ff00,  # Green
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "fields": [
                 {"name": "Endpoint", "value": endpoint, "inline": False},
                 {"name": "Status Change", "value": f"{old_status} → {new_status}", "inline": True},
@@ -873,7 +874,7 @@ class RailwayEAFCDataMiner:
         embed = {
             "title": f"{priority_emojis.get(priority, '📢')} EA FC Change Detected - {priority}",
             "color": color_map.get(priority, 0x0099ff),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "fields": [
                 {"name": "Endpoint", "value": change_data['endpoint'], "inline": True},
                 {"name": "Score", "value": str(analysis['significance_score']), "inline": True},
