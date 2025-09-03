@@ -13,14 +13,17 @@ APP.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
+# -------- storage --------
 DATA = Path("./data")
 (DATA / "snaps").mkdir(parents=True, exist_ok=True)
 
-EVENTS: List[Dict[str, Any]] = []   # rolling in-memory feed
+# -------- runtime state --------
+EVENTS: List[Dict[str, Any]] = []     # rolling feed of events
 MAX_EVENTS = 1000
 LAST_TICK = {"ts": None}
+CONFIG_ERR = {"message": None, "targets": 0}
 
-# ---------------- utils ----------------
+# -------- helpers --------
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -89,7 +92,7 @@ async def fetch(session: aiohttp.ClientSession, name: str, url: str, cond_header
         meta_p.write_text(json.dumps(meta, indent=2))
         return body, meta
 
-# -------- classify & summarise events --------
+# -------- classify & summarise --------
 TOPIC_PATTERNS = [
     ("Evolutions", re.compile(r"\b(evolution|evo|evolutions|evolutionId|eligibility|boosts|tasks)\b", re.I)),
     ("SBC",        re.compile(r"\b(SBC|challenge|group|template|required|chem|squadRating|minRating|requirements)\b", re.I)),
@@ -108,7 +111,7 @@ def classify_topic(target: str, lines: List[str]) -> str:
 
 def classify_severity(lines: List[str]) -> str:
     txt = "\n".join(lines)
-    if re.search(r"\bisEnabled:\s*false\s*->\s*true\b", txt): return "Live"     # went live
+    if re.search(r"\bisEnabled:\s*false\s*->\s*true\b", txt): return "Live"  # went live
     if re.search(r"\bADDED\b", txt): return "New"
     return "Edit"
 
@@ -120,7 +123,7 @@ def make_headline(topic: str, lines: List[str]) -> str:
         if "LIST" in ln: return f"{topic}: list size changed ({ln.strip()})"
     return f"{topic}: {lines[0][:120]}"
 
-# -------- core processing --------
+# -------- processing one target --------
 async def process_target(session, t):
     name, url, typ = t["name"], t["url"], t.get("type","text")
     tk = t.get("track_keys") or {}
@@ -172,24 +175,66 @@ async def process_target(session, t):
         })
         del EVENTS[:-MAX_EVENTS]
 
+# -------- fault-tolerant loop & config loading --------
+def load_cfg():
+    try:
+        with open("endpoints.yaml","r",encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        targets = cfg.get("targets") or []
+        CONFIG_ERR["targets"] = len(targets)
+        CONFIG_ERR["message"] = None if targets else "No targets found in endpoints.yaml"
+        return cfg
+    except Exception as e:
+        CONFIG_ERR["message"] = f"{type(e).__name__}: {e}"
+        CONFIG_ERR["targets"] = 0
+        return {"poll_interval_seconds": 90, "targets": []}
+
+async def safe_process(session, t):
+    try:
+        await process_target(session, t)
+    except Exception as e:
+        EVENTS.append({
+            "ts": now_iso(),
+            "target": t.get("name","unknown"),
+            "kind": "change",
+            "topic": "Flags",
+            "severity": "Edit",
+            "headline": f"Fetcher error: {type(e).__name__}",
+            "lines": [str(e)]
+        })
+        del EVENTS[:-MAX_EVENTS]
+
 async def watcher():
-    cfg = yaml.safe_load(open("endpoints.yaml","r",encoding="utf-8"))
+    cfg = load_cfg()
     interval = int(cfg.get("poll_interval_seconds", 90))
     targets = cfg.get("targets", [])
+    print(f"[watcher] loaded {len(targets)} targets, interval={interval}s")
+
     timeout = aiohttp.ClientTimeout(total=25)
-    headers={"User-Agent":"FUT-PrivateWatcher/1.1 (+gentle polling)"}
+    headers={"User-Agent":"FUT-PrivateWatcher/1.2 (+gentle polling)"}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as sess:
         while True:
-            start=time.time()
-            await asyncio.gather(*(process_target(sess, t) for t in targets))
-            LAST_TICK["ts"] = now_iso()
+            start = time.time()
+            try:
+                if not targets:
+                    await asyncio.sleep(60)
+                    cfg = load_cfg()
+                    interval = int(cfg.get("poll_interval_seconds", 90))
+                    targets = cfg.get("targets", [])
+                    print(f"[watcher] reloaded: {len(targets)} targets")
+                else:
+                    await asyncio.gather(*(safe_process(sess, t) for t in targets), return_exceptions=True)
+                    LAST_TICK["ts"] = now_iso()
+            except Exception as e:
+                print(f"[watcher] ERROR: {type(e).__name__}: {e}")
             await asyncio.sleep(max(0, interval - (time.time()-start)))
 
 @APP.on_event("startup")
 async def _startup():
+    print("[startup] starting watcher…")
     asyncio.create_task(watcher())
 
-# ---------------- Web UI ----------------
+# -------- Web UI --------
 INDEX_HTML = """<!doctype html>
 <html>
 <head>
@@ -199,7 +244,7 @@ INDEX_HTML = """<!doctype html>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css">
 <style>
 :root{
-  --bg:#0b0f14; --card:#121820; --muted:#8a97a6; --lime:#93ff66; --red:#ff6b6b; --amber:#ffd166; --cyan:#66e0ff; --vio:#b794f4;
+  --bg:#0b0f14; --card:#121820; --muted:#8a97a6; --lime:#93ff66; --red:#ff6b6b; --amber:#ffd166; --cyan:#66e0ff;
 }
 body{max-width:1100px;background:var(--bg);color:#e7edf3}
 .header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
@@ -220,8 +265,6 @@ summary{cursor:pointer}
 .mini{font-size:12px;color:var(--muted)}
 .headline{font-weight:700;margin:6px 0}
 .icon{opacity:.9;margin-right:6px}
-
-/* diff tokens */
 .highlight-added{background:rgba(102,224,255,.18);padding:0 4px;border-radius:4px}
 .highlight-removed{background:rgba(255,107,107,.18);padding:0 4px;border-radius:4px}
 .highlight-arrow{background:rgba(255,209,102,.18);padding:0 4px;border-radius:4px}
@@ -230,7 +273,7 @@ summary{cursor:pointer}
 <body>
   <div class="header">
     <h1 style="margin:0">FUT Change Watcher</h1>
-    <div><small>Last check: <span id="last">—</span></small></div>
+    <div><small>Last check: <span id="last">—</span> <span id="cfg" style="color:#f88"></span></small></div>
   </div>
 
   <div class="controls">
@@ -255,15 +298,12 @@ summary{cursor:pointer}
   <div id="events">Loading…</div>
 
 <script>
-const ICONS = {
-  "SBC":"🧩", "Packs":"🎁", "Objectives":"🎯", "Locales":"📝",
-  "Bundles":"📦", "Flags":"🚩", "Evolutions":"🔄", "Other":"✨"
-};
+const ICONS = { "SBC":"🧩", "Packs":"🎁", "Objectives":"🎯", "Locales":"📝", "Bundles":"📦", "Flags":"🚩", "Evolutions":"🔄", "Other":"✨" };
 
 function decorate(line){
-  line = line.replace(/\bADDED\b/g, '<span class="highlight-added">ADDED</span>');
-  line = line.replace(/\bREMOVED\b/g, '<span class="highlight-removed">REMOVED</span>');
-  line = line.replace(/: ([^\n]*?) -> ([^\n]*)/g, ': <span class="highlight-arrow">$1 -> $2</span>');
+  line = line.replace(/\\bADDED\\b/g, '<span class="highlight-added">ADDED</span>');
+  line = line.replace(/\\bREMOVED\\b/g, '<span class="highlight-removed">REMOVED</span>');
+  line = line.replace(/: ([^\\n]*?) -> ([^\\n]*)/g, ': <span class="highlight-arrow">$1 -> $2</span>');
   return line.replace(/&/g,'&amp;').replace(/</g,'&lt;');
 }
 
@@ -273,6 +313,7 @@ async function load(){
   const js = await evRes.json();
   const health = await hRes.json();
   document.getElementById('last').textContent = health.last_check || '—';
+  document.getElementById('cfg').textContent = (health.config_error && health.config_error.message) ? ` • ${health.config_error.message}` : '';
   const wrap = document.getElementById('events');
   const kind = document.getElementById('kind').value;
   const topic = document.getElementById('topic').value;
@@ -293,7 +334,6 @@ async function load(){
     }
     const fresh = ev.kind === 'change' && (!lastSeen || Date.parse(ev.ts.replace(' UTC','Z')) > lastSeen);
 
-    // Compact baseline
     if (ev.kind === 'baseline'){
       const mini = document.createElement('div');
       mini.className='mini';
@@ -347,4 +387,13 @@ def api_events():
 
 @APP.get("/api/health")
 def health():
-    return JSONResponse({"last_check": LAST_TICK["ts"], "events_cached": len(EVENTS)})
+    return JSONResponse({"last_check": LAST_TICK["ts"], "events_cached": len(EVENTS), "config_error": CONFIG_ERR})
+
+@APP.get("/api/config")
+def api_config():
+    try:
+        with open("endpoints.yaml","r",encoding="utf-8") as f:
+            raw = f.read()
+        return JSONResponse({"ok": True, "targets": CONFIG_ERR["targets"], "yaml": raw[:4000]})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"})
