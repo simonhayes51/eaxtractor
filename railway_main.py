@@ -58,31 +58,87 @@ class RailwayEAFCDataMiner:
         
         # EA FC endpoints - mix of public and monitored auth endpoints
         self.endpoints = {
-            # ✅ Public endpoints (no auth required) - HIGH PRIORITY
-            "remote_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json",
+            # ---------- Public web / assets ----------
+            "web_remote_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json",
             "web_app_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
-            "localization_en": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_en.json",
-            "localization_es": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_es.json",
+            "web_loc_en": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_en.json",
+            "web_loc_es": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_es.json",
             "companion_config": "https://www.ea.com/ea-sports-fc/ultimate-team/companion-app/config/config.json",
-            
-            # 📱 Web app assets (contain hardcoded endpoints and features)
-            "web_app_js_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.js",
-            "web_app_js_vendor": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/vendor.js",
-            "web_app_css": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.css",
-            
-            # 🔧 Additional config files
-            "version_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/config/version.json",
-            "feature_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/config/features.json",
-            
-            # 🔍 Auth endpoint monitoring (401 expected, watching for changes)
-            "sbc_sets_monitor": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/sets",
-            "objectives_monitor": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/objective/list",
-            "store_monitor": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/store/purchaseGroup/all",
-            "totw_monitor": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/fullhistory?featureConsumerId=sqbttotw",
-            
-            # 🌐 CDN and media endpoints
-            "cdn_images": "https://media.contentapi.ea.com/content/dam/eacom/ea-sports-fc/",
-            "static_assets": "https://static.ea.com/ea-sports-fc/ultimate-team/"
+            "web_js_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.js",
+            "web_js_vendor": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/vendor.js",
+            "web_css_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.css",
+            "cdn_images_root": "https://media.contentapi.ea.com/content/dam/eacom/ea-sports-fc/",
+            "static_assets_root": "https://static.ea.com/ea-sports-fc/ultimate-team/",
+        
+            # ---------- Telemetry ----------
+            "pin_events": "https://pin-river.data.ea.com/pinEvents",
+        
+            # ---------- FCAS (Auth expected on many) ----------
+            "fcas_auth": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/auth",
+            "fcas_user_objectives_list": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/objective/list",
+            "fcas_user_season": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/season",
+            "fcas_user_season_lite": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/season/lite",
+        
+            # ---------- UTAS core (Auth expected) ----------
+            # Club / squads / inventory
+            "club_overview": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/club",
+            "club_stats": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/club/stats/club",
+            "club_consumables_dev": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/club/consumables/development",
+            "stadium": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/stadium",
+            "squad_active": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/squad/active",
+            "squad_list": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/squad/list",
+        
+            # Store / purchased
+            "store_purchase_groups_all": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/store/purchaseGroup/all?ppInfo=true&categoryInfo=true",
+            "store_category_sku": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sku/FFA25PS5/store/category",
+            "purchased_items": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/purchased/items",
+        
+            # Featured squads / TOTW
+            "featured_squad_history_totw": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/fullhistory?featureConsumerId=sqbttotw",
+            "featured_squad_id_124404": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/124404?featureConsumerId=sqbttotw",
+        
+            # SBCs
+            "sbc_sets": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/sets",
+            "sbc_set_challenges_1244": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/setId/1244/challenges",
+            "sbc_challenge_4333": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/challenge/4333",
+            "sbc_challenge_4333_squad": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/challenge/4333/squad",
+        
+            # Live messages / templates
+            "livemsg_companion_store_tab": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/livemessage/template?screen=companionstorefeaturedtab",
+            "livemsg_web_fut": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/livemessage/template?screen=futweblivemsg",
+            "message_list_template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/message/list/template?nucPersId=245151837&screen=webfuthub",
+        
+            # Objectives / SCMP
+            "scmp_data_lite": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/data/lite",
+            "scmp_objective_categories_all": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/objective/categories/all",
+        
+            # Competitive hubs
+            "rivals_user_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/rivals/v2/user/hub",
+            "champs2_user_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/champs2/user/hub",
+            "sqbt_user_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sqbt/user/hub",
+        
+            # Social
+            "social_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/social/hub",
+        
+            # Leaderboards
+            "leaderboards_options": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/leaderboards/options",
+            "leaderboards_trader_friends_monthly": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/leaderboards/period/monthly/category/trader/view/friends?platform=local",
+        
+            # Watchlist / tradepile
+            "watchlist": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/watchlist",
+            "tradepile": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/tradepile",
+        
+            # Attributes / metadata
+            "attributes_metadata_def_67116627": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/attributes/metadata?defIds=67116627",
+        
+            # Settings
+            "game_settings": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/settings",
+        
+            # Academy
+            "academy_hub_v2": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/academy/hub/v2?offset=0&count=20&sortOrder=asc&slotStatus=NOT_STARTED",
+        
+            # Meta rewards / item attributes (long list of ids)
+            "meta_rewards_attributes": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/metaRewards/items/attributes?itemIds=5005104,6114032,5005098,5005099,5005114,6840832,5005100,6830817,5005116,100941645,6830798,8120328,5005103,5005101,5005102,5005117,6820748,5005115,5005122,67376164,6869171,6313068,100905937,84162632,5005118,184762707,134458366,5004362,5005105,5004363,6844132,5005119,84145111,117672189,5005123,5005120,100840299,5005107,5005121,5005112,5005113,134410713",
         }
         
         # Enhanced content patterns for FC 25 API responses
