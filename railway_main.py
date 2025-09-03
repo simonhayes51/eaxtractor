@@ -56,29 +56,91 @@ class RailwayEAFCDataMiner:
         self.db_path = "data/ea_fc_changes.db"
         self.init_database()
         
-        # EA FC endpoints - mix of public and monitored auth endpoints
+        # ---------- Endpoints (includes all from both HARs) ----------
+        # Some endpoints have per-request overrides (method/headers/json/expect)
         self.endpoints = {
             # ---------- Public web / assets ----------
             "web_remote_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json",
             "web_app_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
-            "web_loc_en": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_en.json",
-            "web_loc_es": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_es.json",
-            "companion_config": "https://www.ea.com/ea-sports-fc/ultimate-team/companion-app/config/config.json",
-            "web_js_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.js",
-            "web_js_vendor": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/vendor.js",
-            "web_css_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.css",
-            "cdn_images_root": "https://media.contentapi.ea.com/content/dam/eacom/ea-sports-fc/",
+            "web_loc_en": {
+                "url": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_en.json",
+                "headers": {
+                    "Referer": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+                    "Origin": "https://www.ea.com",
+                    "Accept": "application/json"
+                },
+                "expect": [200, 403]
+            },
+            "web_loc_es": {
+                "url": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_es.json",
+                "headers": {
+                    "Referer": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+                    "Origin": "https://www.ea.com",
+                    "Accept": "application/json"
+                },
+                "expect": [200, 403]
+            },
+            "companion_config": {
+                "url": "https://www.ea.com/ea-sports-fc/ultimate-team/companion-app/config/config.json",
+                "headers": {
+                    "Referer": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+                    "Origin": "https://www.ea.com",
+                    "Accept": "application/json"
+                },
+                "expect": [200, 403]
+            },
+            "web_js_main": {
+                "url": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.js",
+                "headers": {
+                    "Referer": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+                    "Origin": "https://www.ea.com",
+                    "Accept": "application/javascript, text/javascript, */*; q=0.1"
+                },
+                "expect": [200, 403]
+            },
+            "web_js_vendor": {
+                "url": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/vendor.js",
+                "headers": {
+                    "Referer": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+                    "Origin": "https://www.ea.com",
+                    "Accept": "application/javascript, text/javascript, */*; q=0.1"
+                },
+                "expect": [200, 403]
+            },
+            "web_css_main": {
+                "url": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.css",
+                "headers": {
+                    "Referer": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+                    "Origin": "https://www.ea.com",
+                    "Accept": "text/css,*/*;q=0.1"
+                },
+                "expect": [200, 403]
+            },
+            "cdn_images_logo_black": {
+                # Use a concrete file instead of a directory root to avoid 404 noise
+                "url": "https://media.contentapi.ea.com/content/dam/eacom/ea-sports-fc/common/logos/ea-sports-fc-logo-black.svg",
+                "expect": [200, 403, 404]
+            },
             "static_assets_root": "https://static.ea.com/ea-sports-fc/ultimate-team/",
-        
+
             # ---------- Telemetry ----------
-            "pin_events": "https://pin-river.data.ea.com/pinEvents",
-        
+            "pin_events": {
+                "url": "https://pin-river.data.ea.com/pinEvents",
+                "method": "POST",
+                "json": {"events": []},
+                "headers": {"Content-Type": "application/json"},
+                "expect": [200, 204, 405]
+            },
+
             # ---------- FCAS (Auth expected on many) ----------
-            "fcas_auth": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/auth",
+            "fcas_auth": {
+                "url": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/auth",
+                "expect": [401, 404, 200]
+            },
             "fcas_user_objectives_list": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/objective/list",
             "fcas_user_season": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/season",
             "fcas_user_season_lite": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/season/lite",
-        
+
             # ---------- UTAS core (Auth expected) ----------
             # Club / squads / inventory
             "club_overview": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/club",
@@ -87,56 +149,59 @@ class RailwayEAFCDataMiner:
             "stadium": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/stadium",
             "squad_active": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/squad/active",
             "squad_list": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/squad/list",
-        
+
             # Store / purchased
             "store_purchase_groups_all": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/store/purchaseGroup/all?ppInfo=true&categoryInfo=true",
             "store_category_sku": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sku/FFA25PS5/store/category",
             "purchased_items": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/purchased/items",
-        
+
             # Featured squads / TOTW
             "featured_squad_history_totw": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/fullhistory?featureConsumerId=sqbttotw",
             "featured_squad_id_124404": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/124404?featureConsumerId=sqbttotw",
-        
+
             # SBCs
             "sbc_sets": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/sets",
             "sbc_set_challenges_1244": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/setId/1244/challenges",
-            "sbc_challenge_4333": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/challenge/4333",
+            "sbc_challenge_4333": {
+                "url": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/challenge/4333",
+                "expect": [200, 401, 403, 404]
+            },
             "sbc_challenge_4333_squad": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/challenge/4333/squad",
-        
+
             # Live messages / templates
             "livemsg_companion_store_tab": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/livemessage/template?screen=companionstorefeaturedtab",
             "livemsg_web_fut": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/livemessage/template?screen=futweblivemsg",
             "message_list_template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/message/list/template?nucPersId=245151837&screen=webfuthub",
-        
+
             # Objectives / SCMP
             "scmp_data_lite": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/data/lite",
             "scmp_objective_categories_all": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/objective/categories/all",
-        
+
             # Competitive hubs
             "rivals_user_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/rivals/v2/user/hub",
             "champs2_user_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/champs2/user/hub",
             "sqbt_user_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sqbt/user/hub",
-        
+
             # Social
             "social_hub": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/social/hub",
-        
+
             # Leaderboards
             "leaderboards_options": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/leaderboards/options",
             "leaderboards_trader_friends_monthly": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/leaderboards/period/monthly/category/trader/view/friends?platform=local",
-        
+
             # Watchlist / tradepile
             "watchlist": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/watchlist",
             "tradepile": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/tradepile",
-        
+
             # Attributes / metadata
             "attributes_metadata_def_67116627": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/attributes/metadata?defIds=67116627",
-        
+
             # Settings
             "game_settings": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/settings",
-        
+
             # Academy
             "academy_hub_v2": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/academy/hub/v2?offset=0&count=20&sortOrder=asc&slotStatus=NOT_STARTED",
-        
+
             # Meta rewards / item attributes (long list of ids)
             "meta_rewards_attributes": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/metaRewards/items/attributes?itemIds=5005104,6114032,5005098,5005099,5005114,6840832,5005100,6830817,5005116,100941645,6830798,8120328,5005103,5005101,5005102,5005117,6820748,5005115,5005122,67376164,6869171,6313068,100905937,84162632,5005118,184762707,134458366,5004362,5005105,5004363,6844132,5005119,84145111,117672189,5005123,5005120,100840299,5005107,5005121,5005112,5005113,134410713",
         }
@@ -286,18 +351,41 @@ class RailwayEAFCDataMiner:
         """Generate SHA256 hash of content"""
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
-    async def check_endpoint(self, name: str, url: str) -> Optional[Dict]:
-        """Check endpoint for changes"""
+    async def check_endpoint(self, name: str, url_or_cfg) -> Optional[Dict]:
+        """Check endpoint for changes (supports per-endpoint overrides)"""
         try:
             await asyncio.sleep(2)  # Rate limiting
-            
-            async with self.session.get(url) as response:
+
+            # allow dict config: {"url":..., "method":..., "headers":..., "json":..., "expect":[...]}
+            if isinstance(url_or_cfg, dict):
+                url = url_or_cfg.get("url")
+                method = url_or_cfg.get("method", "GET").upper()
+                extra_headers = url_or_cfg.get("headers") or {}
+                json_body = url_or_cfg.get("json")
+                expect = set(url_or_cfg.get("expect", []))
+            else:
+                url = url_or_cfg
+                method = "GET"
+                extra_headers = {}
+                json_body = None
+                expect = set()
+
+            req_kwargs = {"headers": extra_headers}
+            if json_body is not None:
+                req_kwargs["json"] = json_body
+
+            async with self.session.request(method, url, **req_kwargs) as response:
                 status_code = response.status
                 
                 # Track status code changes
                 await self.track_status_change(name, status_code)
                 
-                if response.status == 200:
+                # treat “expected” non-200 as info, not warnings
+                if expect and status_code in expect and status_code != 200:
+                    logging.info(f"ℹ️ HTTP {status_code} (expected) for {name}")
+                    return None
+
+                if status_code == 200:
                     content = await response.text()
                     current_hash = self.get_file_hash(content)
                     
@@ -314,14 +402,14 @@ class RailwayEAFCDataMiner:
                         self.known_hashes[name] = current_hash
                         return change_data
                         
-                elif response.status == 401:
+                elif status_code == 401:
                     # Auth required - this is expected for some endpoints
                     logging.debug(f"🔒 Auth required: {name}")
-                elif response.status == 429:
+                elif status_code == 429:
                     logging.warning(f"⏰ Rate limited: {name}")
                     await asyncio.sleep(30)
                 else:
-                    logging.warning(f"⚠️ HTTP {response.status} for {name}")
+                    logging.warning(f"⚠️ HTTP {status_code} for {name}")
                     
         except Exception as e:
             logging.error(f"💥 Error checking {name}: {e}")
@@ -586,10 +674,7 @@ class RailwayEAFCDataMiner:
             analysis['significance_score'] += 4
             if analysis['change_type'] == 'unknown':
                 analysis['change_type'] = 'config_update'
-        
-        return analysis
 
-        
         # Endpoint-specific boosts based on URL patterns
         endpoint_indicators = {
             'academy': 12,  # Evolution content very valuable
@@ -607,9 +692,11 @@ class RailwayEAFCDataMiner:
             if indicator in content_lower:
                 analysis['significance_score'] += boost
                 analysis['confidence'] = min(95, analysis['confidence'] + 5)
-        
-        return 'config_update' if analysis['change_type'] == 'unknown' else analysis['change_type']
-        
+
+        # Final safety: ensure we always return a dict with a concrete change_type
+        if analysis['change_type'] == 'unknown':
+            analysis['change_type'] = 'config_update'
+
         return analysis
 
     async def save_to_database(self, change_data: Dict):
