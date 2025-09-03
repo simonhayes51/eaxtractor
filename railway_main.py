@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 EA FC DataMiner - Railway Deployment Version
-Optimized for cloud deployment with health checks and environment variables
+Optimized for cloud deployment with health checks, environment variables, and web interface
 """
 
 import os
@@ -353,6 +353,9 @@ class RailwayEAFCDataMiner:
         # Save to database
         await self.save_to_database(change_data)
         
+        # Save discovered content items
+        await self.save_discovered_content(change_data)
+        
         # Send notification if significant
         if analysis['significance_score'] > self.low_threshold:
             await self.send_discord_notification(change_data)
@@ -363,6 +366,52 @@ class RailwayEAFCDataMiner:
             self.changes_log.pop(0)
         
         return change_data
+
+    async def save_discovered_content(self, change_data: Dict):
+        """Save individual discovered content items"""
+        analysis = change_data['analysis']
+        timestamp = change_data['timestamp']
+        endpoint = change_data['endpoint']
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Save SBCs
+                for sbc in analysis.get('found_sbcs', []):
+                    conn.execute(
+                        "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, 'SBC', str(sbc), analysis['confidence'], endpoint)
+                    )
+                
+                # Save Promos
+                for promo in analysis.get('found_promos', []):
+                    conn.execute(
+                        "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, 'Promo', str(promo), analysis['confidence'], endpoint)
+                    )
+                
+                # Save Packs
+                for pack in analysis.get('found_packs', []):
+                    conn.execute(
+                        "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, 'Pack', str(pack), analysis['confidence'], endpoint)
+                    )
+                
+                # Save Objectives
+                for obj in analysis.get('found_objectives', []):
+                    conn.execute(
+                        "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, 'Objective', str(obj), analysis['confidence'], endpoint)
+                    )
+                
+                # Save Features
+                for feature in analysis.get('found_features', []):
+                    conn.execute(
+                        "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
+                        (timestamp, 'Feature', str(feature), analysis['confidence'], endpoint)
+                    )
+                
+        except Exception as e:
+            logging.error(f"Error saving discovered content: {e}")
 
     async def analyze_content(self, content: str) -> Dict:
         """Analyze content for EA FC patterns"""
@@ -639,12 +688,354 @@ class RailwayEAFCDataMiner:
             }
         })
 
+    async def changes_handler(self, request):
+        """Web interface to view detected changes"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Get recent changes
+                changes = conn.execute("""
+                    SELECT timestamp, endpoint, change_type, significance_score, extracted_data
+                    FROM changes 
+                    ORDER BY timestamp DESC 
+                    LIMIT 50
+                """).fetchall()
+                
+                # Get discovered content
+                content = conn.execute("""
+                    SELECT timestamp, content_type, name, confidence_score, endpoint
+                    FROM discovered_content 
+                    ORDER BY timestamp DESC 
+                    LIMIT 100
+                """).fetchall()
+        except:
+            changes = []
+            content = []
+        
+        # Build HTML page
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>EA FC DataMiner - Detected Changes</title>
+            <style>
+                body {{ 
+                    font-family: 'Segoe UI', Arial, sans-serif; 
+                    margin: 0; 
+                    padding: 20px;
+                    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); 
+                    color: #fff; 
+                    min-height: 100vh;
+                }}
+                .container {{ 
+                    max-width: 1400px; 
+                    margin: 0 auto; 
+                }}
+                .header {{ 
+                    text-align: center; 
+                    margin-bottom: 30px; 
+                    background: rgba(255, 255, 255, 0.1);
+                    padding: 30px;
+                    border-radius: 15px;
+                    backdrop-filter: blur(10px);
+                }}
+                .header h1 {{
+                    margin: 0;
+                    font-size: 2.5em;
+                    background: linear-gradient(45deg, #00d4ff, #ff6b6b, #4ecdc4);
+                    background-clip: text;
+                    -webkit-background-clip: text;
+                    -webkit-text-fill-color: transparent;
+                }}
+                .stats-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 15px;
+                    margin-bottom: 30px;
+                }}
+                .stat-card {{
+                    background: rgba(255, 255, 255, 0.1);
+                    padding: 20px;
+                    border-radius: 10px;
+                    text-align: center;
+                    backdrop-filter: blur(5px);
+                }}
+                .stat-number {{
+                    font-size: 2em;
+                    font-weight: bold;
+                    color: #00d4ff;
+                }}
+                .section {{ 
+                    background: rgba(255, 255, 255, 0.05); 
+                    padding: 25px; 
+                    border-radius: 15px; 
+                    margin-bottom: 25px; 
+                    backdrop-filter: blur(10px);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                }}
+                .section h2 {{
+                    margin-top: 0;
+                    color: #00d4ff;
+                    border-bottom: 2px solid #00d4ff;
+                    padding-bottom: 10px;
+                }}
+                .change-item {{ 
+                    background: rgba(255, 255, 255, 0.08); 
+                    padding: 20px; 
+                    margin: 15px 0; 
+                    border-radius: 10px; 
+                    border-left: 4px solid #00ff00; 
+                    transition: transform 0.2s, box-shadow 0.2s;
+                }}
+                .change-item:hover {{
+                    transform: translateY(-2px);
+                    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+                }}
+                .high-priority {{ border-left-color: #ff6b6b; }}
+                .medium-priority {{ border-left-color: #ffa500; }}
+                .low-priority {{ border-left-color: #4ecdc4; }}
+                .timestamp {{ 
+                    color: #888; 
+                    font-size: 12px; 
+                    font-family: 'Courier New', monospace;
+                }}
+                .score {{ 
+                    background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+                    padding: 5px 12px; 
+                    border-radius: 20px; 
+                    color: #fff; 
+                    font-weight: bold;
+                    display: inline-block;
+                }}
+                .content-list {{ 
+                    display: grid; 
+                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); 
+                    gap: 15px; 
+                }}
+                .content-item {{ 
+                    background: rgba(255, 255, 255, 0.08); 
+                    padding: 15px; 
+                    border-radius: 10px; 
+                    transition: transform 0.2s;
+                }}
+                .content-item:hover {{
+                    transform: scale(1.02);
+                }}
+                .content-type-sbc {{ border-left: 4px solid #ff6b6b; }}
+                .content-type-promo {{ border-left: 4px solid #ffa500; }}
+                .content-type-pack {{ border-left: 4px solid #4ecdc4; }}
+                .content-type-objective {{ border-left: 4px solid #a8e6cf; }}
+                .content-type-feature {{ border-left: 4px solid #dda0dd; }}
+                .refresh {{ 
+                    background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+                    color: white; 
+                    padding: 12px 25px; 
+                    text-decoration: none; 
+                    border-radius: 25px; 
+                    transition: all 0.3s;
+                    display: inline-block;
+                    margin: 10px;
+                }}
+                .refresh:hover {{
+                    transform: translateY(-2px);
+                    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+                }}
+                .no-data {{
+                    text-align: center;
+                    color: #888;
+                    font-style: italic;
+                    padding: 40px;
+                }}
+                .content-summary {{
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 10px;
+                    margin-top: 10px;
+                }}
+                .content-tag {{
+                    background: rgba(0, 212, 255, 0.2);
+                    border: 1px solid rgba(0, 212, 255, 0.4);
+                    padding: 4px 8px;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    color: #00d4ff;
+                }}
+            </style>
+            <meta http-equiv="refresh" content="300"> <!-- Auto refresh every 5 minutes -->
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>🚀 EA FC DataMiner</h1>
+                    <p>Real-time Content Detection System</p>
+                    <p style="font-size: 14px; opacity: 0.8;">Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+                    <a href="/changes" class="refresh">🔄 Refresh</a>
+                    <a href="/stats" class="refresh">📊 JSON Stats</a>
+                    <a href="/" class="refresh">❤️ Health Check</a>
+                </div>
+                
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-number">{len(changes)}</div>
+                        <div>Total Changes</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{len([c for c in changes if len(c) > 3 and c[3] >= 15])}</div>
+                        <div>High Priority</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{len(content)}</div>
+                        <div>Content Items</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">{len(self.endpoints)}</div>
+                        <div>Endpoints Monitored</div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h2>📊 Recent Changes ({len(changes)})</h2>
+                    {self._render_changes_html(changes)}
+                </div>
+                
+                <div class="section">
+                    <h2>🔍 Discovered Content ({len(content)})</h2>
+                    <div class="content-list">
+                        {self._render_content_html(content)}
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return web.Response(text=html, content_type='text/html')
+
+    def _render_changes_html(self, changes):
+        """Render changes as HTML"""
+        if not changes:
+            return '<div class="no-data">🔍 No changes detected yet.<br><br>The system is monitoring EA FC endpoints and will detect changes when EA updates their content. This usually happens when new SBCs, promos, or packs are released.</div>'
+        
+        html_parts = []
+        for change in changes:
+            timestamp, endpoint, change_type, score, extracted_data = change
+            
+            # Parse extracted data
+            try:
+                analysis = json.loads(extracted_data) if extracted_data else {}
+            except:
+                analysis = {}
+            
+            # Determine priority class
+            priority_class = "low-priority"
+            priority_text = "LOW"
+            if score >= 15:
+                priority_class = "high-priority"
+                priority_text = "HIGH"
+            elif score >= 8:
+                priority_class = "medium-priority" 
+                priority_text = "MEDIUM"
+            
+            # Build content summary tags
+            content_tags = []
+            if analysis.get('found_sbcs'):
+                content_tags.append(f'🏆 SBCs ({len(analysis["found_sbcs"])})')
+            if analysis.get('found_promos'):
+                content_tags.append(f'🎉 Promos ({len(analysis["found_promos"])})')
+            if analysis.get('found_packs'):
+                content_tags.append(f'📦 Packs ({len(analysis["found_packs"])})')
+            if analysis.get('found_objectives'):
+                content_tags.append(f'🎯 Objectives ({len(analysis["found_objectives"])})')
+            if analysis.get('found_features'):
+                content_tags.append(f'🔧 Features ({len(analysis["found_features"])})')
+            
+            content_tags_html = ""
+            if content_tags:
+                content_tags_html = f'''
+                <div class="content-summary">
+                    {''.join([f'<span class="content-tag">{tag}</span>' for tag in content_tags])}
+                </div>
+                '''
+            
+            # Sample content preview for high priority changes
+            sample_preview = ""
+            if score >= 15 and (analysis.get('found_sbcs') or analysis.get('found_promos')):
+                samples = []
+                if analysis.get('found_sbcs'):
+                    samples.extend([f"🏆 {sbc}" for sbc in analysis['found_sbcs'][:3]])
+                if analysis.get('found_promos'):
+                    samples.extend([f"🎉 {promo}" for promo in analysis['found_promos'][:3]])
+                
+                if samples:
+                    sample_preview = f'<div style="margin-top: 10px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 5px; font-size: 13px;">{"<br>".join(samples[:5])}</div>'
+            
+            html_parts.append(f"""
+            <div class="change-item {priority_class}">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <div>
+                        <strong style="color: #00d4ff;">{endpoint}</strong>
+                        <span style="margin-left: 15px; color: #888;">Priority: {priority_text}</span>
+                    </div>
+                    <span class="score">Score: {score}</span>
+                </div>
+                <div class="timestamp">{timestamp} | Type: {change_type} | Confidence: {analysis.get('confidence', 0)}%</div>
+                {content_tags_html}
+                {sample_preview}
+            </div>
+            """)
+        
+        return "".join(html_parts)
+
+    def _render_content_html(self, content):
+        """Render discovered content as HTML"""
+        if not content:
+            return '<div class="no-data">🔍 No specific content items discovered yet.<br><br>Content items like SBC names, promo titles, and pack names will appear here when detected in EA FC configuration changes.</div>'
+        
+        html_parts = []
+        for item in content:
+            timestamp, content_type, name, confidence, endpoint = item
+            
+            # Icon based on content type
+            icons = {
+                'SBC': '🏆',
+                'Promo': '🎉', 
+                'Pack': '📦',
+                'Objective': '🎯',
+                'Feature': '🔧',
+                'Player': '⚽'
+            }
+            icon = icons.get(content_type, '📄')
+            
+            # CSS class for content type
+            type_class = f"content-type-{content_type.lower()}"
+            
+            html_parts.append(f"""
+            <div class="content-item {type_class}">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 1.2em; margin-right: 8px;">{icon}</span>
+                    <strong style="color: #fff;">{name}</strong>
+                </div>
+                <div class="timestamp">{timestamp}</div>
+                <div style="margin-top: 5px;">
+                    <span style="background: rgba(0,212,255,0.2); padding: 2px 6px; border-radius: 10px; font-size: 11px; color: #00d4ff;">
+                        {content_type}
+                    </span>
+                    <span style="background: rgba(255,107,107,0.2); padding: 2px 6px; border-radius: 10px; font-size: 11px; color: #ff6b6b; margin-left: 5px;">
+                        {confidence}% confidence
+                    </span>
+                </div>
+                <div style="font-size: 12px; color: #888; margin-top: 8px;">Source: {endpoint}</div>
+            </div>
+            """)
+        
+        return "".join(html_parts)
+
     async def start_web_server(self):
         """Start web server for Railway health checks"""
         app = web.Application()
         app.router.add_get('/', self.health_check_handler)
         app.router.add_get('/health', self.health_check_handler)
         app.router.add_get('/stats', self.stats_handler)
+        app.router.add_get('/changes', self.changes_handler)  # Web interface
         
         runner = web.AppRunner(app)
         await runner.setup()
@@ -678,7 +1069,7 @@ async def main():
 ╔══════════════════════════════════════════════════════════════╗
 ║              EA FC DataMiner - Railway Edition               ║
 ║                   Cloud-Optimized Version                   ║
-║                      v2.0 - Enhanced                        ║
+║                      v2.1 - Web Interface                   ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
     
