@@ -1,178 +1,84 @@
-poll_interval_seconds: 90
+poll_interval_seconds: 60
+
 targets:
-- name: en_us_json
-  url: https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/loc/companion/futweb/preload/en-US.json
-  type: json
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
-- name: config_json
-  url: https://www.ea.com/fr-fr/ea-sports-fc/ultimate-team/web-app/config/config.json
-  type: json
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
-- name: remoteconfig_json
-  url: https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json
-  type: json
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
-- name: string_catalog_json
-  url: https://www.ea.com/fr-fr/ea-sports-fc/ultimate-team/web-app/config/string-catalog.json
-  type: json
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
-- name: odc_store_plugin_min_js
-  url: https://www.origin.com/store/odc/store-plugin/odc-store-plugin.min.js
-  type: text
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
-- name: futcompitemraritytunables_json
-  url: https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/items/images/backgrounds/itemBGs/futcompitemraritytunables.json
-  type: json
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
-- name: en_us_json
-  url: https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/loc/companion/futweb/cdn/en-US.json
-  type: json
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
-- name: keyattributes_json
-  url: https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/items/keyAttributes.json
-  type: json
-  track_keys:
-    include:
-    - sbc
-    - challenge
-    - objective
-    - pack
-    - catalog
-    - group
-    - template
-    - isEnabled
-    - availability
-    - start
-    - end
-    - requirements
-    exclude:
-    - lastUpdated
-    - generatedAt
-    - build
-    - timestamp
+  # ---------- HIGH-SIGNAL CATALOGS (edit these 4 URLs to match your HAR) ----------
+  - name: sbc_catalog
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/catalog/sbc_catalog.json"
+    type: json
+    track_keys:
+      include: ["group","groups","challenge","challenges","template","requirements","isEnabled","availability","start","end","repeatable","reward","name"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  - name: evolution_catalog
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/catalog/evolution_catalog.json"
+    type: json
+    track_keys:
+      include: ["evolution","evolutions","evolutionId","name","eligibility","boosts","tasks","cost","isEnabled","availability","start","end"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  - name: objectives_catalog
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/catalog/objectives_catalog.json"
+    type: json
+    track_keys:
+      include: ["objective","objectives","name","tasks","rewards","milestone","availability","start","end","isEnabled"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  - name: store_packs
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/store/packs.json"
+    type: json
+    track_keys:
+      include: ["pack","packs","name","price","coins","points","guarantee","rarity","weights","start","end","isEnabled"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  # ---------- STRINGS / LOCALES (names/codenames often land early) ----------
+  - name: string_catalog
+    url: "https://www.ea.com/fr-fr/ea-sports-fc/ultimate-team/web-app/config/string-catalog.json"
+    type: json
+    track_keys:
+      include: ["SBC","PROMO","PACK","EVOLUTION","Objective","name","title","label"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  - name: locale_en_us_preload
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/loc/companion/futweb/preload/en-US.json"
+    type: json
+    track_keys:
+      include: ["SBC","PROMO","PACK","EVOLUTION","Objective","name","title","label"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  - name: locale_en_us_cdn
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/loc/companion/futweb/cdn/en-US.json"
+    type: json
+    track_keys:
+      include: ["SBC","PROMO","PACK","EVOLUTION","Objective","name","title","label"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  # ---------- FLAGS / CONFIG ----------
+  - name: remote_config
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json"
+    type: json
+    track_keys:
+      include: ["isEnabled","enableAt","start","end","treatment","rollout","feature","flag"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  - name: app_config
+    url: "https://www.ea.com/fr-fr/ea-sports-fc/ultimate-team/web-app/config/config.json"
+    type: json
+    track_keys:
+      include: ["isEnabled","enableAt","start","end","feature","flag"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
+
+  # ---------- JS / BUNDLES (string hints) ----------
+  - name: odc_store_plugin_min_js
+    url: "https://www.origin.com/store/odc/store-plugin/odc-store-plugin.min.js"
+    type: text
+    track_keys:
+      include: ["SBC","PROMO","PACK","EVOLUTION","Objective","isEnabled","enableAt","manifest","service-worker"]
+      exclude: []
+
+  # ---------- RARITY / TUNABLES (sometimes move near lightning rounds) ----------
+  - name: futcompitemraritytunables
+    url: "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/items/images/backgrounds/itemBGs/futcompitemraritytunables.json"
+    type: json
+    track_keys:
+      include: ["pack","rarity","weight","tunable","start","end"]
+      exclude: ["lastUpdated","generatedAt","build","timestamp","version"]
