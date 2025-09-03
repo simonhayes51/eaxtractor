@@ -14,11 +14,12 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 import signal
 import sys
 from aiohttp import web
 from dotenv import load_dotenv
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 # Load environment variables
 load_dotenv()
@@ -29,6 +30,44 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+def expand_templates(endpoint_map: Dict[str, Union[str, dict]]) -> Dict[str, Union[str, dict]]:
+    """
+    Expand entries like:
+      {
+        "key": {
+          "template": "https://.../{id}/path?cat={cat}",
+          "params": [{"id": 1, "cat": "a"}, {"id": 2, "cat": "b"}],
+          ... (any other request overrides like headers/expect)
+        }
+      }
+    Into multiple concrete endpoints key_1, key_2, ...
+    """
+    expanded = {}
+    for key, val in endpoint_map.items():
+        if isinstance(val, dict) and "template" in val and "params" in val:
+            tpl = val["template"]
+            params = val["params"]
+            for i, p in enumerate(params, start=1):
+                name = f"{key}_{i}"
+                cfg = {k: v for k, v in val.items() if k not in ("template", "params")}
+                cfg["url"] = tpl.format(**p)
+                expanded[name] = cfg
+        else:
+            expanded[key] = val
+    return expanded
+
+def redact_url(u: str) -> str:
+    """Redact sensitive query params for safe logging."""
+    try:
+        parts = urlsplit(u)
+        q = dict(parse_qsl(parts.query, keep_blank_values=True))
+        for k in ["access_token", "code", "sid", "ticket", "auth", "session", "jwt"]:
+            if k in q:
+                q[k] = "REDACTED"
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(q), parts.fragment))
+    except Exception:
+        return u
 
 class RailwayEAFCDataMiner:
     def __init__(self):
@@ -42,9 +81,16 @@ class RailwayEAFCDataMiner:
         self.medium_threshold = int(os.getenv('MEDIUM_PRIORITY_THRESHOLD', 8))
         self.low_threshold = int(os.getenv('LOW_PRIORITY_THRESHOLD', 3))
         
-        # Data storage (Railway has ephemeral filesystem, so we'll use in-memory with periodic saves)
-        self.known_hashes = {}
-        self.changes_log = []
+        # Optional auth headers (only used if provided)
+        self.AUTH_HEADERS = {}
+        if os.getenv("EA_COOKIE"):
+            self.AUTH_HEADERS["Cookie"] = os.getenv("EA_COOKIE")
+        if os.getenv("EA_BEARER"):
+            self.AUTH_HEADERS["Authorization"] = f"Bearer {os.getenv('EA_BEARER')}"
+
+        # Data storage
+        self.known_hashes: Dict[str, str] = {}   # endpoint_name -> last_content_hash
+        self.changes_log: List[Dict] = []
         self.session = None
         self.running = False
         
@@ -55,10 +101,10 @@ class RailwayEAFCDataMiner:
         # Initialize database
         self.db_path = "data/ea_fc_changes.db"
         self.init_database()
+        self.load_known_hashes_from_db()
         
-        # ---------- Endpoints (includes all from both HARs) ----------
-        # Some endpoints have per-request overrides (method/headers/json/expect)
-        self.endpoints = {
+        # ---------- Endpoints (includes all from your HARs + new ones + templates) ----------
+        endpoints: Dict[str, Union[str, dict]] = {
             # ---------- Public web / assets ----------
             "web_remote_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json",
             "web_app_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
@@ -117,11 +163,18 @@ class RailwayEAFCDataMiner:
                 "expect": [200, 403]
             },
             "cdn_images_logo_black": {
-                # Use a concrete file instead of a directory root to avoid 404 noise
                 "url": "https://media.contentapi.ea.com/content/dam/eacom/ea-sports-fc/common/logos/ea-sports-fc-logo-black.svg",
                 "expect": [200, 403, 404]
             },
-            "static_assets_root": "https://static.ea.com/ea-sports-fc/ultimate-team/",
+            "static_assets_root": {
+                "url": "https://static.ea.com/ea-sports-fc/ultimate-team/",
+                "headers": {
+                    "Referer": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+                    "Origin": "https://www.ea.com",
+                    "Accept": "text/html,*/*;q=0.1"
+                },
+                "expect": [200, 301, 302, 403]
+            },
 
             # ---------- Telemetry ----------
             "pin_events": {
@@ -204,8 +257,63 @@ class RailwayEAFCDataMiner:
 
             # Meta rewards / item attributes (long list of ids)
             "meta_rewards_attributes": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/metaRewards/items/attributes?itemIds=5005104,6114032,5005098,5005099,5005114,6840832,5005100,6830817,5005116,100941645,6830798,8120328,5005103,5005101,5005102,5005117,6820748,5005115,5005122,67376164,6869171,6313068,100905937,84162632,5005118,184762707,134458366,5004362,5005105,5004363,6844132,5005119,84145111,117672189,5005123,5005120,100840299,5005107,5005121,5005112,5005113,134410713",
+
+            # ---------- New from HAR #3 ----------
+            "ut_auth": {
+                "url": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/auth",
+                "expect": [200, 401, 403]
+            },
+            "academy_hub_v2_category0": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/academy/hub/v2/category/0?offset=0&count=20&sortOrder=asc&slotStatus=NOT_STARTED",
+            "appstats": {
+                "url": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/appstats",
+                "expect": [200, 401, 403]
+            },
+            "attributes_metadata_def_201347393": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/attributes/metadata?defIds=201347393",
+            "sbc_set_challenges_1257": {
+                "url": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/setId/1257/challenges",
+                "expect": [200, 401, 403, 404]
+            },
+            "squad_id_0": {
+                "url": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/squad/0",
+                "expect": [200, 401, 403, 404]
+            },
+
+            # ---------- Template families (small, polite sweeps) ----------
+            "academy_hub_by_category": {
+                "template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/academy/hub/v2/category/{category}?offset=0&count=20&sortOrder=asc&slotStatus=NOT_STARTED",
+                "params": [{"category": c} for c in [0, 1, 2, 3]],
+                "expect": [200, 401, 403]
+            },
+            "sbc_set_challenges_probe": {
+                "template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/setId/{setId}/challenges",
+                "params": [{"setId": i} for i in [1244, 1250, 1253, 1257, 1260]],
+                "expect": [200, 401, 403, 404]
+            },
+            "featured_squad_probe": {
+                "template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/{id}?featureConsumerId=sqbttotw",
+                "params": [{"id": i} for i in [124404, 124405, 124410]],
+                "expect": [200, 401, 403, 404]
+            },
+            "attributes_metadata_probe": {
+                "template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/attributes/metadata?defIds={defId}",
+                "params": [{"defId": d} for d in [67116627, 201347393]],
+                "expect": [200, 401, 403, 404]
+            },
+            "store_category_by_sku": {
+                "template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sku/{sku}/store/category",
+                "params": [{"sku": s} for s in ["FFA25PS5", "FFA25XBX", "FFA25PC"]],
+                "expect": [200, 401, 403, 404]
+            },
+            "livemessage_templates": {
+                "template": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/livemessage/template?screen={screen}",
+                "params": [{"screen": s} for s in ["companionstorefeaturedtab", "futweblivemsg", "webfuthub", "weboverlay"]],
+                "expect": [200, 401, 403]
+            }
         }
-        
+
+        # Expand templates to concrete endpoints
+        self.endpoints = expand_templates(endpoints)
+
         # Enhanced content patterns for FC 25 API responses
         self.content_patterns = {
             'sbc_indicators': [
@@ -285,6 +393,7 @@ class RailwayEAFCDataMiner:
         
         logging.info("🚂 Railway EA FC DataMiner initialized")
 
+    # ---------- Database ----------
     def init_database(self):
         """Initialize SQLite database"""
         with sqlite3.connect(self.db_path) as conn:
@@ -325,10 +434,44 @@ class RailwayEAFCDataMiner:
                 )
             ''')
 
+            # Persist known_hashes across restarts
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS known_hashes (
+                    endpoint TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            ''')
+
+    def load_known_hashes_from_db(self):
+        """Load persisted content hashes into memory at startup."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute("SELECT endpoint, content_hash FROM known_hashes").fetchall()
+                self.known_hashes = {endpoint: h for endpoint, h in rows}
+                logging.info(f"🧠 Loaded {len(self.known_hashes)} known hashes from DB")
+        except Exception as e:
+            logging.error(f"Failed to load known_hashes: {e}")
+
+    def upsert_known_hash(self, endpoint: str, content_hash: str):
+        """Persist/Update content hash for an endpoint."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    INSERT INTO known_hashes (endpoint, content_hash, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(endpoint) DO UPDATE SET
+                        content_hash=excluded.content_hash,
+                        updated_at=excluded.updated_at
+                ''', (endpoint, content_hash, datetime.utcnow().isoformat()))
+        except Exception as e:
+            logging.error(f"Failed to persist known_hash for {endpoint}: {e}")
+
+    # ---------- HTTP ----------
     async def initialize_session(self):
         """Initialize aiohttp session"""
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit(KHTML, like Gecko) Chrome/120 Safari/537.36',
             'Accept': 'application/json, text/html, application/xhtml+xml, application/xml;q=0.9, image/webp, */*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -351,7 +494,7 @@ class RailwayEAFCDataMiner:
         """Generate SHA256 hash of content"""
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
-    async def check_endpoint(self, name: str, url_or_cfg) -> Optional[Dict]:
+    async def check_endpoint(self, name: str, url_or_cfg: Union[str, dict]) -> Optional[Dict]:
         """Check endpoint for changes (supports per-endpoint overrides)"""
         try:
             await asyncio.sleep(2)  # Rate limiting
@@ -370,7 +513,11 @@ class RailwayEAFCDataMiner:
                 json_body = None
                 expect = set()
 
-            req_kwargs = {"headers": extra_headers}
+            # Merge headers with optional auth
+            merged_headers = dict(extra_headers) if extra_headers else {}
+            merged_headers.update(self.AUTH_HEADERS)
+
+            req_kwargs = {"headers": merged_headers}
             if json_body is not None:
                 req_kwargs["json"] = json_body
 
@@ -389,9 +536,10 @@ class RailwayEAFCDataMiner:
                     content = await response.text()
                     current_hash = self.get_file_hash(content)
                     
-                    # Check if we've seen this endpoint before
+                    # First time tracking this endpoint
                     if name not in self.known_hashes:
                         self.known_hashes[name] = current_hash
+                        self.upsert_known_hash(name, current_hash)
                         logging.info(f"✅ New endpoint tracked: {name}")
                         return None
                     
@@ -400,10 +548,10 @@ class RailwayEAFCDataMiner:
                         logging.warning(f"🚨 CHANGE DETECTED: {name}")
                         change_data = await self.process_change(name, url, content, status_code)
                         self.known_hashes[name] = current_hash
+                        self.upsert_known_hash(name, current_hash)
                         return change_data
                         
                 elif status_code == 401:
-                    # Auth required - this is expected for some endpoints
                     logging.debug(f"🔒 Auth required: {name}")
                 elif status_code == 429:
                     logging.warning(f"⏰ Rate limited: {name}")
@@ -429,23 +577,17 @@ class RailwayEAFCDataMiner:
                 current_time = datetime.now().isoformat()
                 
                 if last_status is None:
-                    # First time seeing this endpoint
                     conn.execute(
                         "INSERT INTO endpoint_status (endpoint, status_code, last_checked) VALUES (?, ?, ?)",
                         (endpoint, status_code, current_time)
                     )
                 elif last_status[0] != status_code:
-                    # Status changed!
                     conn.execute(
                         "INSERT INTO endpoint_status (endpoint, status_code, last_checked, status_changed) VALUES (?, ?, ?, ?)",
                         (endpoint, status_code, current_time, current_time)
                     )
-                    
-                    # Log significant status changes
                     if (last_status[0] == 401 and status_code == 200) or (last_status[0] == 404 and status_code == 200):
                         logging.warning(f"🎉 STATUS CHANGE: {endpoint} changed from {last_status[0]} to {status_code}")
-                        
-                        # Send high-priority notification for auth->success changes
                         if status_code == 200:
                             await self.send_status_change_notification(endpoint, last_status[0], status_code)
                 
@@ -478,6 +620,7 @@ class RailwayEAFCDataMiner:
         except Exception as e:
             logging.error(f"Status notification error: {e}")
 
+    # ---------- Changes / Analysis ----------
     async def process_change(self, name: str, url: str, content: str, status_code: int) -> Dict:
         """Process detected change"""
         timestamp = datetime.now()
@@ -488,7 +631,7 @@ class RailwayEAFCDataMiner:
         change_data = {
             'timestamp': timestamp.isoformat(),
             'endpoint': name,
-            'url': url,
+            'url': redact_url(url),
             'analysis': analysis,
             'content_length': len(content),
             'status_code': status_code
@@ -519,41 +662,31 @@ class RailwayEAFCDataMiner:
         
         try:
             with sqlite3.connect(self.db_path) as conn:
-                # Save SBCs
                 for sbc in analysis.get('found_sbcs', []):
                     conn.execute(
                         "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
                         (timestamp, 'SBC', str(sbc), analysis['confidence'], endpoint)
                     )
-                
-                # Save Promos
                 for promo in analysis.get('found_promos', []):
                     conn.execute(
                         "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
                         (timestamp, 'Promo', str(promo), analysis['confidence'], endpoint)
                     )
-                
-                # Save Packs
                 for pack in analysis.get('found_packs', []):
                     conn.execute(
                         "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
                         (timestamp, 'Pack', str(pack), analysis['confidence'], endpoint)
                     )
-                
-                # Save Objectives
                 for obj in analysis.get('found_objectives', []):
                     conn.execute(
                         "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
                         (timestamp, 'Objective', str(obj), analysis['confidence'], endpoint)
                     )
-                
-                # Save Features
                 for feature in analysis.get('found_features', []):
                     conn.execute(
                         "INSERT INTO discovered_content (timestamp, content_type, name, confidence_score, endpoint) VALUES (?, ?, ?, ?, ?)",
                         (timestamp, 'Feature', str(feature), analysis['confidence'], endpoint)
                     )
-                
         except Exception as e:
             logging.error(f"Error saving discovered content: {e}")
 
@@ -575,7 +708,7 @@ class RailwayEAFCDataMiner:
             'confidence': 50
         }
         
-        # Enhanced pattern matching with new categories
+        # Enhanced pattern matching with categories
         for category, patterns in self.content_patterns.items():
             matches = []
             for pattern in patterns:
@@ -583,7 +716,7 @@ class RailwayEAFCDataMiner:
                 matches.extend(found)
             
             if category == 'sbc_indicators':
-                analysis['found_sbcs'] = list(set(matches))[:10]  # Limit to 10
+                analysis['found_sbcs'] = list(set(matches))[:10]
                 analysis['significance_score'] += len(matches) * 5
                 if matches:
                     analysis['change_type'] = 'sbc_update'
@@ -591,7 +724,7 @@ class RailwayEAFCDataMiner:
                     
             elif category == 'evolution_indicators':
                 analysis['found_evolutions'] = list(set(matches))[:10]
-                analysis['significance_score'] += len(matches) * 8  # Evolutions are high value
+                analysis['significance_score'] += len(matches) * 8
                 if matches:
                     analysis['change_type'] = 'evolution_update'
                     analysis['confidence'] = 88
@@ -605,7 +738,7 @@ class RailwayEAFCDataMiner:
                     
             elif category == 'competitive_indicators':
                 analysis['found_competitive'] = list(set(matches))[:10]
-                analysis['significance_score'] += len(matches) * 6  # FUT Champs/Rivals changes important
+                analysis['significance_score'] += len(matches) * 6
                 if matches:
                     analysis['change_type'] = 'competitive_update'
                     analysis['confidence'] = 82
@@ -652,7 +785,7 @@ class RailwayEAFCDataMiner:
                     analysis['change_type'] = 'social_update'
                     analysis['confidence'] = 60
         
-        # High-value terms boost - expanded list
+        # High-value terms boost
         high_value_terms = [
             'toty', 'tots', 'icon', 'hero', 'flashback', 'fut champions', 
             'lightning round', 'beta', 'new feature', 'evolution', 'academy',
@@ -675,27 +808,30 @@ class RailwayEAFCDataMiner:
             if analysis['change_type'] == 'unknown':
                 analysis['change_type'] = 'config_update'
 
-        # Endpoint-specific boosts based on URL patterns
+        # Endpoint-specific boosts (by content hints)
         endpoint_indicators = {
-            'academy': 12,  # Evolution content very valuable
-            'champs': 10,   # FUT Champions updates important  
-            'sbs': 10,      # SBC content critical
-            'rivals': 8,    # Division Rivals updates
-            'featured': 8,  # TOTW and featured squads
-            'store': 7,     # Pack and store updates
-            'tradepile': 5, # Market activity
-            'squad': 4,     # Squad management
-            'social': 3     # Social features
+            'academy': 12,   # Evolutions/Academy
+            'champs': 10,    # FUT Champs
+            'sbs': 10,       # SBCs
+            'rivals': 8,     # Division Rivals
+            'featured': 8,   # Featured squads/TOTW
+            'store': 7,      # Store
+            'tradepile': 5,  # Market activity
+            'squad': 4,      # Squad management
+            'social': 3,     # Social
+            'appstats': 5,
+            'attributes/metadata': 6,
+            'setid': 6
         }
-        
         for indicator, boost in endpoint_indicators.items():
             if indicator in content_lower:
                 analysis['significance_score'] += boost
                 analysis['confidence'] = min(95, analysis['confidence'] + 5)
 
-        # Final safety: ensure we always return a dict with a concrete change_type
+        # Final: ensure a concrete change_type and clamp confidence
         if analysis['change_type'] == 'unknown':
             analysis['change_type'] = 'config_update'
+        analysis['confidence'] = min(100, analysis['confidence'])
 
         return analysis
 
@@ -731,7 +867,6 @@ class RailwayEAFCDataMiner:
         if priority == 'LOW' and analysis['confidence'] < 80:
             return
         
-        # Create embed
         color_map = {'HIGH': 0xff0000, 'MEDIUM': 0xffa500, 'LOW': 0x00ff00}
         priority_emojis = {'HIGH': '🚨🚨🚨', 'MEDIUM': '⚠️', 'LOW': '📢'}
         
@@ -747,7 +882,6 @@ class RailwayEAFCDataMiner:
             ]
         }
         
-        # Add found content summary
         content_summary = []
         if analysis['found_sbcs']:
             content_summary.append(f"🏆 SBCs: {len(analysis['found_sbcs'])}")
@@ -767,14 +901,12 @@ class RailwayEAFCDataMiner:
                 "inline": False
             })
         
-        # Add sample findings for high priority
         if priority == 'HIGH' and (analysis['found_sbcs'] or analysis['found_promos']):
             sample_content = []
             if analysis['found_sbcs']:
                 sample_content.extend([f"SBC: {item}" for item in analysis['found_sbcs'][:3]])
             if analysis['found_promos']:
                 sample_content.extend([f"Promo: {item}" for item in analysis['found_promos'][:3]])
-            
             if sample_content:
                 embed["fields"].append({
                     "name": "Sample Findings",
@@ -803,6 +935,7 @@ class RailwayEAFCDataMiner:
             return 'LOW'
         return None
 
+    # ---------- Server Loop ----------
     async def monitoring_loop(self):
         """Main monitoring loop"""
         await self.initialize_session()
@@ -821,9 +954,8 @@ class RailwayEAFCDataMiner:
                 
                 # Check all endpoints
                 for name, url in self.endpoints.items():
-                    if not self.running:  # Check if we should stop
+                    if not self.running:
                         break
-                        
                     change_data = await self.check_endpoint(name, url)
                     if change_data:
                         changes_detected.append(change_data)
@@ -834,7 +966,6 @@ class RailwayEAFCDataMiner:
                 else:
                     logging.info("✅ No changes detected")
                 
-                # Wait for next cycle
                 if self.running:
                     await asyncio.sleep(self.check_interval)
                 
@@ -844,6 +975,7 @@ class RailwayEAFCDataMiner:
             if self.session:
                 await self.session.close()
 
+    # ---------- HTTP Handlers ----------
     async def health_check_handler(self, request):
         """Health check endpoint for Railway"""
         return web.json_response({
@@ -857,7 +989,6 @@ class RailwayEAFCDataMiner:
 
     async def stats_handler(self, request):
         """Stats endpoint"""
-        # Get recent changes from database
         try:
             with sqlite3.connect(self.db_path) as conn:
                 recent_changes = conn.execute(
@@ -869,7 +1000,6 @@ class RailwayEAFCDataMiner:
                     (self.high_threshold,)
                 ).fetchone()[0]
                 
-                # Get endpoint status summary
                 endpoint_stats = conn.execute("""
                     SELECT endpoint, status_code, COUNT(*) as checks
                     FROM endpoint_status 
@@ -900,7 +1030,6 @@ class RailwayEAFCDataMiner:
         """Web interface to view detected changes"""
         try:
             with sqlite3.connect(self.db_path) as conn:
-                # Get recent changes
                 changes = conn.execute("""
                     SELECT timestamp, endpoint, change_type, significance_score, extracted_data
                     FROM changes 
@@ -908,7 +1037,6 @@ class RailwayEAFCDataMiner:
                     LIMIT 50
                 """).fetchall()
                 
-                # Get discovered content
                 content = conn.execute("""
                     SELECT timestamp, content_type, name, confidence_score, endpoint
                     FROM discovered_content 
@@ -919,7 +1047,6 @@ class RailwayEAFCDataMiner:
             changes = []
             content = []
         
-        # Build HTML page
         html = f"""
         <!DOCTYPE html>
         <html>
@@ -934,141 +1061,44 @@ class RailwayEAFCDataMiner:
                     color: #fff; 
                     min-height: 100vh;
                 }}
-                .container {{ 
-                    max-width: 1400px; 
-                    margin: 0 auto; 
-                }}
+                .container {{ max-width: 1400px; margin: 0 auto; }}
                 .header {{ 
-                    text-align: center; 
-                    margin-bottom: 30px; 
+                    text-align: center; margin-bottom: 30px; 
                     background: rgba(255, 255, 255, 0.1);
-                    padding: 30px;
-                    border-radius: 15px;
-                    backdrop-filter: blur(10px);
+                    padding: 30px; border-radius: 15px; backdrop-filter: blur(10px);
                 }}
                 .header h1 {{
-                    margin: 0;
-                    font-size: 2.5em;
+                    margin: 0; font-size: 2.5em;
                     background: linear-gradient(45deg, #00d4ff, #ff6b6b, #4ecdc4);
-                    background-clip: text;
-                    -webkit-background-clip: text;
-                    -webkit-text-fill-color: transparent;
+                    background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
                 }}
-                .stats-grid {{
-                    display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 15px;
-                    margin-bottom: 30px;
-                }}
-                .stat-card {{
-                    background: rgba(255, 255, 255, 0.1);
-                    padding: 20px;
-                    border-radius: 10px;
-                    text-align: center;
-                    backdrop-filter: blur(5px);
-                }}
-                .stat-number {{
-                    font-size: 2em;
-                    font-weight: bold;
-                    color: #00d4ff;
-                }}
-                .section {{ 
-                    background: rgba(255, 255, 255, 0.05); 
-                    padding: 25px; 
-                    border-radius: 15px; 
-                    margin-bottom: 25px; 
-                    backdrop-filter: blur(10px);
-                    border: 1px solid rgba(255, 255, 255, 0.1);
-                }}
-                .section h2 {{
-                    margin-top: 0;
-                    color: #00d4ff;
-                    border-bottom: 2px solid #00d4ff;
-                    padding-bottom: 10px;
-                }}
-                .change-item {{ 
-                    background: rgba(255, 255, 255, 0.08); 
-                    padding: 20px; 
-                    margin: 15px 0; 
-                    border-radius: 10px; 
-                    border-left: 4px solid #00ff00; 
-                    transition: transform 0.2s, box-shadow 0.2s;
-                }}
-                .change-item:hover {{
-                    transform: translateY(-2px);
-                    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
-                }}
+                .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }}
+                .stat-card {{ background: rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; text-align: center; backdrop-filter: blur(5px); }}
+                .stat-number {{ font-size: 2em; font-weight: bold; color: #00d4ff; }}
+                .section {{ background: rgba(255,255,255,0.05); padding: 25px; border-radius: 15px; margin-bottom: 25px; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }}
+                .section h2 {{ margin-top: 0; color: #00d4ff; border-bottom: 2px solid #00d4ff; padding-bottom: 10px; }}
+                .change-item {{ background: rgba(255,255,255,0.08); padding: 20px; margin: 15px 0; border-radius: 10px; border-left: 4px solid #00ff00; transition: transform 0.2s, box-shadow 0.2s; }}
+                .change-item:hover {{ transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3); }}
                 .high-priority {{ border-left-color: #ff6b6b; }}
                 .medium-priority {{ border-left-color: #ffa500; }}
                 .low-priority {{ border-left-color: #4ecdc4; }}
-                .timestamp {{ 
-                    color: #888; 
-                    font-size: 12px; 
-                    font-family: 'Courier New', monospace;
-                }}
-                .score {{ 
-                    background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
-                    padding: 5px 12px; 
-                    border-radius: 20px; 
-                    color: #fff; 
-                    font-weight: bold;
-                    display: inline-block;
-                }}
-                .content-list {{ 
-                    display: grid; 
-                    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); 
-                    gap: 15px; 
-                }}
-                .content-item {{ 
-                    background: rgba(255, 255, 255, 0.08); 
-                    padding: 15px; 
-                    border-radius: 10px; 
-                    transition: transform 0.2s;
-                }}
-                .content-item:hover {{
-                    transform: scale(1.02);
-                }}
+                .timestamp {{ color: #888; font-size: 12px; font-family: 'Courier New', monospace; }}
+                .score {{ background: linear-gradient(45deg, #667eea 0%, #764ba2 100%); padding: 5px 12px; border-radius: 20px; color: #fff; font-weight: bold; display: inline-block; }}
+                .content-list {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; }}
+                .content-item {{ background: rgba(255,255,255,0.08); padding: 15px; border-radius: 10px; transition: transform 0.2s; }}
+                .content-item:hover {{ transform: scale(1.02); }}
                 .content-type-sbc {{ border-left: 4px solid #ff6b6b; }}
                 .content-type-promo {{ border-left: 4px solid #ffa500; }}
                 .content-type-pack {{ border-left: 4px solid #4ecdc4; }}
                 .content-type-objective {{ border-left: 4px solid #a8e6cf; }}
                 .content-type-feature {{ border-left: 4px solid #dda0dd; }}
-                .refresh {{ 
-                    background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
-                    color: white; 
-                    padding: 12px 25px; 
-                    text-decoration: none; 
-                    border-radius: 25px; 
-                    transition: all 0.3s;
-                    display: inline-block;
-                    margin: 10px;
-                }}
-                .refresh:hover {{
-                    transform: translateY(-2px);
-                    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
-                }}
-                .no-data {{
-                    text-align: center;
-                    color: #888;
-                    font-style: italic;
-                    padding: 40px;
-                }}
-                .content-summary {{
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 10px;
-                    margin-top: 10px;
-                }}
-                .content-tag {{
-                    background: rgba(0, 212, 255, 0.2);
-                    border: 1px solid rgba(0, 212, 255, 0.4);
-                    padding: 4px 8px;
-                    border-radius: 12px;
-                    font-size: 12px;
-                    color: #00d4ff;
-                }}
+                .refresh {{ background: linear-gradient(45deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 25px; text-decoration: none; border-radius: 25px; transition: all 0.3s; display: inline-block; margin: 10px; }}
+                .refresh:hover {{ transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.3); }}
+                .no-data {{ text-align: center; color: #888; font-style: italic; padding: 40px; }}
+                .content-summary {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }}
+                .content-tag {{ background: rgba(0,212,255,0.2); border: 1px solid rgba(0,212,255,0.4); padding: 4px 8px; border-radius: 12px; font-size: 12px; color: #00d4ff; }}
             </style>
-            <meta http-equiv="refresh" content="300"> <!-- Auto refresh every 5 minutes -->
+            <meta http-equiv="refresh" content="300">
         </head>
         <body>
             <div class="container">
@@ -1127,13 +1157,11 @@ class RailwayEAFCDataMiner:
         for change in changes:
             timestamp, endpoint, change_type, score, extracted_data = change
             
-            # Parse extracted data
             try:
                 analysis = json.loads(extracted_data) if extracted_data else {}
             except:
                 analysis = {}
             
-            # Determine priority class
             priority_class = "low-priority"
             priority_text = "LOW"
             if score >= 15:
@@ -1143,7 +1171,6 @@ class RailwayEAFCDataMiner:
                 priority_class = "medium-priority" 
                 priority_text = "MEDIUM"
             
-            # Build content summary tags
             content_tags = []
             if analysis.get('found_sbcs'):
                 content_tags.append(f'🏆 SBCs ({len(analysis["found_sbcs"])})')
@@ -1164,7 +1191,6 @@ class RailwayEAFCDataMiner:
                 </div>
                 '''
             
-            # Sample content preview for high priority changes
             sample_preview = ""
             if score >= 15 and (analysis.get('found_sbcs') or analysis.get('found_promos')):
                 samples = []
@@ -1202,7 +1228,6 @@ class RailwayEAFCDataMiner:
         for item in content:
             timestamp, content_type, name, confidence, endpoint = item
             
-            # Icon based on content type
             icons = {
                 'SBC': '🏆',
                 'Promo': '🎉', 
@@ -1212,8 +1237,6 @@ class RailwayEAFCDataMiner:
                 'Player': '⚽'
             }
             icon = icons.get(content_type, '📄')
-            
-            # CSS class for content type
             type_class = f"content-type-{content_type.lower()}"
             
             html_parts.append(f"""
@@ -1257,7 +1280,6 @@ class RailwayEAFCDataMiner:
         """Start the dataminer"""
         self.running = True
         
-        # Handle shutdown gracefully
         def signal_handler(signum, frame):
             logging.info("🛑 Shutdown signal received")
             self.running = False
@@ -1265,7 +1287,6 @@ class RailwayEAFCDataMiner:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        # Start web server and monitoring concurrently
         await asyncio.gather(
             self.start_web_server(),
             self.monitoring_loop()
