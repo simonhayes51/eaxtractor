@@ -68,30 +68,62 @@ class RailwayEAFCDataMiner:
             "cdn_assets": "https://fifa24.content.easports.com/fifa/fltOnlineAssets/"
         }
         
-        # Content patterns for detection
+        # Enhanced content patterns for FC 25 API responses
         self.content_patterns = {
             'sbc_indicators': [
                 r'"challengeName":\s*"([^"]+)"',
-                r'"sbc[^"]*":\s*"([^"]+)"',
+                r'"name":\s*"([^"]+)"',
+                r'"setName":\s*"([^"]+)"',
                 r'"requirements":\s*\{[^}]*"rating":\s*(\d+)',
+                r'"chemistry":\s*(\d+)',
+                r'"challengeId":\s*(\d+)',
+                r'"setId":\s*(\d+)',
                 r'squad.*building.*challenge',
             ],
             'promo_indicators': [
                 r'"promoName":\s*"([^"]+)"',
                 r'"campaignName":\s*"([^"]+)"',
+                r'"eventName":\s*"([^"]+)"',
+                r'"featureConsumerId":\s*"([^"]+)"',
                 r'totw|team.*week',
                 r'toty|team.*year',
                 r'tots|team.*season',
+                r'fut.*champions',
+                r'weekend.*league',
+                r'flashback|moments|hero|icon',
             ],
             'player_indicators': [
                 r'"displayName":\s*"([^"]+)"',
                 r'"playerName":\s*"([^"]+)"',
+                r'"firstName":\s*"([^"]+)"',
+                r'"lastName":\s*"([^"]+)"',
                 r'"rating":\s*(\d{2,3})',
+                r'"position":\s*"([A-Z]{2,3})"',
+                r'"nation":\s*(\d+)',
+                r'"club":\s*(\d+)',
             ],
             'pack_indicators': [
                 r'"packName":\s*"([^"]+)"',
                 r'"packType":\s*"([^"]+)"',
+                r'"purchaseGroup":\s*"([^"]+)"',
+                r'"categoryName":\s*"([^"]+)"',
+                r'"price":\s*(\d+)',
+                r'"coins":\s*(\d+)',
+                r'"points":\s*(\d+)',
                 r'lightning.*round',
+                r'player.*pick',
+                r'premium.*pack',
+            ],
+            'objective_indicators': [
+                r'"objectiveName":\s*"([^"]+)"',
+                r'"description":\s*"([^"]+)"',
+                r'"category":\s*"([^"]+)"',
+                r'"progress":\s*(\d+)',
+                r'"target":\s*(\d+)',
+                r'"reward":\s*"([^"]+)"',
+                r'daily.*objective',
+                r'weekly.*objective',
+                r'season.*objective',
             ]
         }
         
