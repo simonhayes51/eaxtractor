@@ -414,20 +414,24 @@ class RailwayEAFCDataMiner:
             logging.error(f"Error saving discovered content: {e}")
 
     async def analyze_content(self, content: str) -> Dict:
-        """Analyze content for EA FC patterns"""
+        """Analyze content for EA FC patterns with enhanced detection"""
         analysis = {
             'found_sbcs': [],
+            'found_evolutions': [],
             'found_promos': [],
             'found_players': [],
             'found_packs': [],
             'found_objectives': [],
             'found_features': [],
+            'found_competitive': [],
+            'found_market': [],
+            'found_social': [],
             'significance_score': 0,
             'change_type': 'unknown',
             'confidence': 50
         }
         
-        # Pattern matching
+        # Enhanced pattern matching with new categories
         for category, patterns in self.content_patterns.items():
             matches = []
             for pattern in patterns:
@@ -441,6 +445,13 @@ class RailwayEAFCDataMiner:
                     analysis['change_type'] = 'sbc_update'
                     analysis['confidence'] = 85
                     
+            elif category == 'evolution_indicators':
+                analysis['found_evolutions'] = list(set(matches))[:10]
+                analysis['significance_score'] += len(matches) * 8  # Evolutions are high value
+                if matches:
+                    analysis['change_type'] = 'evolution_update'
+                    analysis['confidence'] = 88
+                    
             elif category == 'promo_indicators':
                 analysis['found_promos'] = list(set(matches))[:10]
                 analysis['significance_score'] += len(matches) * 8
@@ -448,16 +459,23 @@ class RailwayEAFCDataMiner:
                     analysis['change_type'] = 'promo_update'
                     analysis['confidence'] = 90
                     
+            elif category == 'competitive_indicators':
+                analysis['found_competitive'] = list(set(matches))[:10]
+                analysis['significance_score'] += len(matches) * 6  # FUT Champs/Rivals changes important
+                if matches:
+                    analysis['change_type'] = 'competitive_update'
+                    analysis['confidence'] = 82
+                    
             elif category == 'player_indicators':
                 analysis['found_players'] = list(set(matches))[:10]
-                analysis['significance_score'] += len(matches) * 2
+                analysis['significance_score'] += len(matches) * 3
                 if matches:
                     analysis['change_type'] = 'player_update'
-                    analysis['confidence'] = 60
+                    analysis['confidence'] = 65
                     
             elif category == 'pack_indicators':
                 analysis['found_packs'] = list(set(matches))[:10]
-                analysis['significance_score'] += len(matches) * 3
+                analysis['significance_score'] += len(matches) * 4
                 if matches:
                     analysis['change_type'] = 'pack_update'
                     analysis['confidence'] = 75
@@ -475,19 +493,63 @@ class RailwayEAFCDataMiner:
                 if matches:
                     analysis['change_type'] = 'feature_update'
                     analysis['confidence'] = 85
+                    
+            elif category == 'market_indicators':
+                analysis['found_market'] = list(set(matches))[:10]
+                analysis['significance_score'] += len(matches) * 3
+                if matches:
+                    analysis['change_type'] = 'market_update'
+                    analysis['confidence'] = 70
+                    
+            elif category == 'social_indicators':
+                analysis['found_social'] = list(set(matches))[:10]
+                analysis['significance_score'] += len(matches) * 2
+                if matches:
+                    analysis['change_type'] = 'social_update'
+                    analysis['confidence'] = 60
         
-        # High-value terms boost
-        high_value_terms = ['toty', 'tots', 'icon', 'hero', 'flashback', 'fut champions', 'lightning round', 'beta', 'new feature']
+        # High-value terms boost - expanded list
+        high_value_terms = [
+            'toty', 'tots', 'icon', 'hero', 'flashback', 'fut champions', 
+            'lightning round', 'beta', 'new feature', 'evolution', 'academy',
+            'weekend league', 'division rivals', 'squad battles', 'rewards',
+            'promo', 'special card', 'limited time', 'pack odds'
+        ]
+        
         content_lower = content.lower()
+        value_boost = 0
         for term in high_value_terms:
             if term in content_lower:
-                analysis['significance_score'] += 10
-                analysis['confidence'] = min(95, analysis['confidence'] + 10)
+                value_boost += 8
+                analysis['confidence'] = min(95, analysis['confidence'] + 8)
+        
+        analysis['significance_score'] += value_boost
         
         # JavaScript/config file specific boosts
-        if any(indicator in content_lower for indicator in ['api/', 'endpoint', 'url:', 'config']):
-            analysis['significance_score'] += 5
-            analysis['change_type'] = 'config_update' if analysis['change_type'] == 'unknown' else analysis['change_type']
+        if any(indicator in content_lower for indicator in ['api/', 'endpoint', 'url:', 'config', 'auth']):
+            analysis['significance_score'] += 4
+            if analysis['change_type'] == 'unknown':
+                analysis['change_type'] = 'config_update'
+        
+        # Endpoint-specific boosts based on URL patterns
+        endpoint_indicators = {
+            'academy': 12,  # Evolution content very valuable
+            'champs': 10,   # FUT Champions updates important  
+            'sbs': 10,      # SBC content critical
+            'rivals': 8,    # Division Rivals updates
+            'featured': 8,  # TOTW and featured squads
+            'store': 7,     # Pack and store updates
+            'tradepile': 5, # Market activity
+            'squad': 4,     # Squad management
+            'social': 3     # Social features
+        }
+        
+        for indicator, boost in endpoint_indicators.items():
+            if indicator in content_lower:
+                analysis['significance_score'] += boost
+                analysis['confidence'] = min(95, analysis['confidence'] + 5)
+        
+        return analysis = 'config_update' if analysis['change_type'] == 'unknown' else analysis['change_type']
         
         return analysis
 
