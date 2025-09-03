@@ -56,38 +56,33 @@ class RailwayEAFCDataMiner:
         self.db_path = "data/ea_fc_changes.db"
         self.init_database()
         
-        # EA FC 25 Real API endpoints - discovered from actual app traffic
+        # EA FC endpoints - mix of public and monitored auth endpoints
         self.endpoints = {
-            # 🏆 SBC (Squad Building Challenges) - HIGH PRIORITY
-            "sbc_sets": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/sets",
-            "sbc_challenges_1244": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/setId/1244/challenges",
-            "sbc_challenge_4333": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/challenge/4333",
-            
-            # 🎯 Objectives - HIGH PRIORITY
-            "objectives_list": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/objective/list",
-            "objectives_categories": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/objective/categories/all",
-            
-            # 🛒 Store & Packs - HIGH PRIORITY
-            "store_purchase_groups": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/store/purchaseGroup/all?ppInfo=true&categoryInfo=true",
-            "store_category": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sku/FFA25PS5/store/category",
-            
-            # ⭐ Featured Content - MEDIUM PRIORITY
-            "featured_squad_totw": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/fullhistory?featureConsumerId=sqbttotw",
-            "live_messages": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/livemessage/template?screen=companionstorefeaturedtab",
-            
-            # 📊 Meta & Rewards - MEDIUM PRIORITY
-            "meta_rewards": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/metaRewards/items/attributes?itemIds=5005104,6114032,5005098,5005099,5005114,6840832,5005100,6830817,5005116,100941645,6830798,8120328,5005103,5005101,5005102,5005117,6820748,5005115,5005122,67376164,6869171,6313068,100905937,84162632,5005118,184762707,134458366,5004362,5005105,5004363,6844132,5005119,84145111,117672189,5005123,5005120,100840299,5005107,5005121,5005112,5005113,134410713",
-            "season_data": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/season",
-            
-            # 🔧 Configuration - LOW PRIORITY
+            # ✅ Public endpoints (no auth required) - HIGH PRIORITY
             "remote_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/25E4CDAE-799B-45BE-B257-667FDCDE8044/2025/fut/config/companion/remoteConfig.json",
-            "scmp_data": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/scmp/data/lite",
+            "web_app_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/",
+            "localization_en": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_en.json",
+            "localization_es": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/loc/messages_es.json",
+            "companion_config": "https://www.ea.com/ea-sports-fc/ultimate-team/companion-app/config/config.json",
             
-            # 📈 Analytics & Tracking
-            "pin_events": "https://pin-river.data.ea.com/pinEvents",
-            "club_stats": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/club/stats/club",
-            "watchlist": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/watchlist",
-            "stadium": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/stadium"
+            # 📱 Web app assets (contain hardcoded endpoints and features)
+            "web_app_js_main": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.js",
+            "web_app_js_vendor": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/vendor.js",
+            "web_app_css": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/main.css",
+            
+            # 🔧 Additional config files
+            "version_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/config/version.json",
+            "feature_config": "https://www.ea.com/ea-sports-fc/ultimate-team/web-app/config/features.json",
+            
+            # 🔍 Auth endpoint monitoring (401 expected, watching for changes)
+            "sbc_sets_monitor": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/sbs/sets",
+            "objectives_monitor": "https://fcas.mob.v4.prd.futc-ext.gcp.ea.com/fc/user/objective/list",
+            "store_monitor": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/store/purchaseGroup/all",
+            "totw_monitor": "https://utas.mob.v4.prd.futc-ext.gcp.ea.com/ut/game/fc25/featuredsquad/fullhistory?featureConsumerId=sqbttotw",
+            
+            # 🌐 CDN and media endpoints
+            "cdn_images": "https://media.contentapi.ea.com/content/dam/eacom/ea-sports-fc/",
+            "static_assets": "https://static.ea.com/ea-sports-fc/ultimate-team/"
         }
         
         # Enhanced content patterns for FC 25 API responses
@@ -101,6 +96,8 @@ class RailwayEAFCDataMiner:
                 r'"challengeId":\s*(\d+)',
                 r'"setId":\s*(\d+)',
                 r'squad.*building.*challenge',
+                r'sbc.*challenge',
+                r'player.*exchange',
             ],
             'promo_indicators': [
                 r'"promoName":\s*"([^"]+)"',
@@ -113,6 +110,8 @@ class RailwayEAFCDataMiner:
                 r'fut.*champions',
                 r'weekend.*league',
                 r'flashback|moments|hero|icon',
+                r'special.*card',
+                r'limited.*time',
             ],
             'player_indicators': [
                 r'"displayName":\s*"([^"]+)"',
@@ -123,6 +122,8 @@ class RailwayEAFCDataMiner:
                 r'"position":\s*"([A-Z]{2,3})"',
                 r'"nation":\s*(\d+)',
                 r'"club":\s*(\d+)',
+                r'player.*update',
+                r'new.*player',
             ],
             'pack_indicators': [
                 r'"packName":\s*"([^"]+)"',
@@ -135,6 +136,8 @@ class RailwayEAFCDataMiner:
                 r'lightning.*round',
                 r'player.*pick',
                 r'premium.*pack',
+                r'flash.*sale',
+                r'special.*offer',
             ],
             'objective_indicators': [
                 r'"objectiveName":\s*"([^"]+)"',
@@ -146,6 +149,16 @@ class RailwayEAFCDataMiner:
                 r'daily.*objective',
                 r'weekly.*objective',
                 r'season.*objective',
+                r'milestone.*reward',
+            ],
+            'feature_indicators': [
+                r'"featureName":\s*"([^"]+)"',
+                r'"enabled":\s*(true|false)',
+                r'"version":\s*"([^"]+)"',
+                r'"releaseDate":\s*"([^"]+)"',
+                r'new.*feature',
+                r'beta.*test',
+                r'experimental',
             ]
         }
         
@@ -163,6 +176,7 @@ class RailwayEAFCDataMiner:
                     significance_score INTEGER,
                     content_hash TEXT,
                     extracted_data TEXT,
+                    status_code INTEGER,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -178,15 +192,29 @@ class RailwayEAFCDataMiner:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS endpoint_status (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    endpoint TEXT NOT NULL,
+                    status_code INTEGER,
+                    last_checked TEXT,
+                    status_changed TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
 
     async def initialize_session(self):
         """Initialize aiohttp session"""
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/html, application/xhtml+xml, application/xml;q=0.9, image/webp, */*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
-            'DNT': '1'
+            'DNT': '1',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
         }
         
         timeout = aiohttp.ClientTimeout(total=30)
@@ -208,6 +236,11 @@ class RailwayEAFCDataMiner:
             await asyncio.sleep(2)  # Rate limiting
             
             async with self.session.get(url) as response:
+                status_code = response.status
+                
+                # Track status code changes
+                await self.track_status_change(name, status_code)
+                
                 if response.status == 200:
                     content = await response.text()
                     current_hash = self.get_file_hash(content)
@@ -221,10 +254,13 @@ class RailwayEAFCDataMiner:
                     # Check for changes
                     if self.known_hashes[name] != current_hash:
                         logging.warning(f"🚨 CHANGE DETECTED: {name}")
-                        change_data = await self.process_change(name, url, content)
+                        change_data = await self.process_change(name, url, content, status_code)
                         self.known_hashes[name] = current_hash
                         return change_data
                         
+                elif response.status == 401:
+                    # Auth required - this is expected for some endpoints
+                    logging.debug(f"🔒 Auth required: {name}")
                 elif response.status == 429:
                     logging.warning(f"⏰ Rate limited: {name}")
                     await asyncio.sleep(30)
@@ -236,7 +272,69 @@ class RailwayEAFCDataMiner:
         
         return None
 
-    async def process_change(self, name: str, url: str, content: str) -> Dict:
+    async def track_status_change(self, endpoint: str, status_code: int):
+        """Track status code changes for endpoints"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Get last known status
+                last_status = conn.execute(
+                    "SELECT status_code FROM endpoint_status WHERE endpoint = ? ORDER BY created_at DESC LIMIT 1",
+                    (endpoint,)
+                ).fetchone()
+                
+                current_time = datetime.now().isoformat()
+                
+                if last_status is None:
+                    # First time seeing this endpoint
+                    conn.execute(
+                        "INSERT INTO endpoint_status (endpoint, status_code, last_checked) VALUES (?, ?, ?)",
+                        (endpoint, status_code, current_time)
+                    )
+                elif last_status[0] != status_code:
+                    # Status changed!
+                    conn.execute(
+                        "INSERT INTO endpoint_status (endpoint, status_code, last_checked, status_changed) VALUES (?, ?, ?, ?)",
+                        (endpoint, status_code, current_time, current_time)
+                    )
+                    
+                    # Log significant status changes
+                    if (last_status[0] == 401 and status_code == 200) or (last_status[0] == 404 and status_code == 200):
+                        logging.warning(f"🎉 STATUS CHANGE: {endpoint} changed from {last_status[0]} to {status_code}")
+                        
+                        # Send high-priority notification for auth->success changes
+                        if status_code == 200:
+                            await self.send_status_change_notification(endpoint, last_status[0], status_code)
+                
+        except Exception as e:
+            logging.error(f"Error tracking status for {endpoint}: {e}")
+
+    async def send_status_change_notification(self, endpoint: str, old_status: int, new_status: int):
+        """Send notification for significant status changes"""
+        if not self.discord_webhook:
+            return
+        
+        embed = {
+            "title": "🎉 EA FC Endpoint Status Change!",
+            "color": 0x00ff00,  # Green
+            "timestamp": datetime.utcnow().isoformat(),
+            "fields": [
+                {"name": "Endpoint", "value": endpoint, "inline": False},
+                {"name": "Status Change", "value": f"{old_status} → {new_status}", "inline": True},
+                {"name": "Significance", "value": "HIGH - Possible auth bypass!", "inline": True}
+            ],
+            "description": f"Endpoint that was previously blocked is now accessible!"
+        }
+        
+        payload = {"embeds": [embed]}
+        
+        try:
+            async with self.session.post(self.discord_webhook, json=payload) as response:
+                if response.status == 204:
+                    logging.info("✅ Status change notification sent")
+        except Exception as e:
+            logging.error(f"Status notification error: {e}")
+
+    async def process_change(self, name: str, url: str, content: str, status_code: int) -> Dict:
         """Process detected change"""
         timestamp = datetime.now()
         
@@ -248,7 +346,8 @@ class RailwayEAFCDataMiner:
             'endpoint': name,
             'url': url,
             'analysis': analysis,
-            'content_length': len(content)
+            'content_length': len(content),
+            'status_code': status_code
         }
         
         # Save to database
@@ -272,6 +371,8 @@ class RailwayEAFCDataMiner:
             'found_promos': [],
             'found_players': [],
             'found_packs': [],
+            'found_objectives': [],
+            'found_features': [],
             'significance_score': 0,
             'change_type': 'unknown',
             'confidence': 50
@@ -285,40 +386,59 @@ class RailwayEAFCDataMiner:
                 matches.extend(found)
             
             if category == 'sbc_indicators':
-                analysis['found_sbcs'] = list(set(matches))
+                analysis['found_sbcs'] = list(set(matches))[:10]  # Limit to 10
                 analysis['significance_score'] += len(matches) * 5
                 if matches:
                     analysis['change_type'] = 'sbc_update'
                     analysis['confidence'] = 85
                     
             elif category == 'promo_indicators':
-                analysis['found_promos'] = list(set(matches))
+                analysis['found_promos'] = list(set(matches))[:10]
                 analysis['significance_score'] += len(matches) * 8
                 if matches:
                     analysis['change_type'] = 'promo_update'
                     analysis['confidence'] = 90
                     
             elif category == 'player_indicators':
-                analysis['found_players'] = list(set(matches))
+                analysis['found_players'] = list(set(matches))[:10]
                 analysis['significance_score'] += len(matches) * 2
                 if matches:
                     analysis['change_type'] = 'player_update'
                     analysis['confidence'] = 60
                     
             elif category == 'pack_indicators':
-                analysis['found_packs'] = list(set(matches))
+                analysis['found_packs'] = list(set(matches))[:10]
                 analysis['significance_score'] += len(matches) * 3
                 if matches:
                     analysis['change_type'] = 'pack_update'
                     analysis['confidence'] = 75
+                    
+            elif category == 'objective_indicators':
+                analysis['found_objectives'] = list(set(matches))[:10]
+                analysis['significance_score'] += len(matches) * 4
+                if matches:
+                    analysis['change_type'] = 'objective_update'
+                    analysis['confidence'] = 80
+                    
+            elif category == 'feature_indicators':
+                analysis['found_features'] = list(set(matches))[:10]
+                analysis['significance_score'] += len(matches) * 6
+                if matches:
+                    analysis['change_type'] = 'feature_update'
+                    analysis['confidence'] = 85
         
         # High-value terms boost
-        high_value_terms = ['toty', 'tots', 'icon', 'hero', 'flashback', 'fut champions']
+        high_value_terms = ['toty', 'tots', 'icon', 'hero', 'flashback', 'fut champions', 'lightning round', 'beta', 'new feature']
         content_lower = content.lower()
         for term in high_value_terms:
             if term in content_lower:
                 analysis['significance_score'] += 10
                 analysis['confidence'] = min(95, analysis['confidence'] + 10)
+        
+        # JavaScript/config file specific boosts
+        if any(indicator in content_lower for indicator in ['api/', 'endpoint', 'url:', 'config']):
+            analysis['significance_score'] += 5
+            analysis['change_type'] = 'config_update' if analysis['change_type'] == 'unknown' else analysis['change_type']
         
         return analysis
 
@@ -328,15 +448,16 @@ class RailwayEAFCDataMiner:
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute('''
                     INSERT INTO changes 
-                    (timestamp, endpoint, change_type, significance_score, content_hash, extracted_data)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (timestamp, endpoint, change_type, significance_score, content_hash, extracted_data, status_code)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     change_data['timestamp'],
                     change_data['endpoint'],
                     change_data['analysis']['change_type'],
                     change_data['analysis']['significance_score'],
                     self.get_file_hash(str(change_data['analysis'])),
-                    json.dumps(change_data['analysis'])
+                    json.dumps(change_data['analysis']),
+                    change_data['status_code']
                 ))
         except Exception as e:
             logging.error(f"Database save error: {e}")
@@ -355,9 +476,10 @@ class RailwayEAFCDataMiner:
         
         # Create embed
         color_map = {'HIGH': 0xff0000, 'MEDIUM': 0xffa500, 'LOW': 0x00ff00}
+        priority_emojis = {'HIGH': '🚨🚨🚨', 'MEDIUM': '⚠️', 'LOW': '📢'}
         
         embed = {
-            "title": f"🚨 EA FC Change Detected - {priority}",
+            "title": f"{priority_emojis.get(priority, '📢')} EA FC Change Detected - {priority}",
             "color": color_map.get(priority, 0x0099ff),
             "timestamp": datetime.utcnow().isoformat(),
             "fields": [
@@ -368,7 +490,7 @@ class RailwayEAFCDataMiner:
             ]
         }
         
-        # Add found content
+        # Add found content summary
         content_summary = []
         if analysis['found_sbcs']:
             content_summary.append(f"🏆 SBCs: {len(analysis['found_sbcs'])}")
@@ -376,6 +498,10 @@ class RailwayEAFCDataMiner:
             content_summary.append(f"🎉 Promos: {len(analysis['found_promos'])}")
         if analysis['found_packs']:
             content_summary.append(f"📦 Packs: {len(analysis['found_packs'])}")
+        if analysis['found_objectives']:
+            content_summary.append(f"🎯 Objectives: {len(analysis['found_objectives'])}")
+        if analysis['found_features']:
+            content_summary.append(f"🔧 Features: {len(analysis['found_features'])}")
         
         if content_summary:
             embed["fields"].append({
@@ -383,6 +509,21 @@ class RailwayEAFCDataMiner:
                 "value": " | ".join(content_summary),
                 "inline": False
             })
+        
+        # Add sample findings for high priority
+        if priority == 'HIGH' and (analysis['found_sbcs'] or analysis['found_promos']):
+            sample_content = []
+            if analysis['found_sbcs']:
+                sample_content.extend([f"SBC: {item}" for item in analysis['found_sbcs'][:3]])
+            if analysis['found_promos']:
+                sample_content.extend([f"Promo: {item}" for item in analysis['found_promos'][:3]])
+            
+            if sample_content:
+                embed["fields"].append({
+                    "name": "Sample Findings",
+                    "value": "\n".join(sample_content),
+                    "inline": False
+                })
         
         payload = {"embeds": [embed]}
         
@@ -453,7 +594,8 @@ class RailwayEAFCDataMiner:
             'uptime': str(datetime.now()),
             'endpoints_monitored': len(self.endpoints),
             'changes_detected': len(self.changes_log),
-            'running': self.running
+            'running': self.running,
+            'check_interval_minutes': self.check_interval // 60
         })
 
     async def stats_handler(self, request):
@@ -469,16 +611,32 @@ class RailwayEAFCDataMiner:
                     "SELECT COUNT(*) FROM changes WHERE significance_score > ? AND timestamp > datetime('now', '-24 hours')",
                     (self.high_threshold,)
                 ).fetchone()[0]
+                
+                # Get endpoint status summary
+                endpoint_stats = conn.execute("""
+                    SELECT endpoint, status_code, COUNT(*) as checks
+                    FROM endpoint_status 
+                    WHERE last_checked > datetime('now', '-1 hours')
+                    GROUP BY endpoint, status_code
+                    ORDER BY endpoint
+                """).fetchall()
         except:
             recent_changes = 0
             high_sig_changes = 0
+            endpoint_stats = []
         
         return web.json_response({
             'recent_changes_24h': recent_changes,
             'high_significance_changes_24h': high_sig_changes,
             'endpoints_monitored': len(self.endpoints),
             'check_interval_minutes': self.check_interval // 60,
-            'last_changes': self.changes_log[-5:] if self.changes_log else []
+            'endpoint_status_summary': [{"endpoint": row[0], "status": row[1], "checks": row[2]} for row in endpoint_stats],
+            'last_changes': self.changes_log[-5:] if self.changes_log else [],
+            'thresholds': {
+                'high': self.high_threshold,
+                'medium': self.medium_threshold,
+                'low': self.low_threshold
+            }
         })
 
     async def start_web_server(self):
@@ -520,6 +678,7 @@ async def main():
 ╔══════════════════════════════════════════════════════════════╗
 ║              EA FC DataMiner - Railway Edition               ║
 ║                   Cloud-Optimized Version                   ║
+║                      v2.0 - Enhanced                        ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
     
